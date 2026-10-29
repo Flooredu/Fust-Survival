@@ -1535,7 +1535,7 @@ local W_CACHE={ loot={}, base={}, bags={}, dropped={}, nodes={}, picks={}, plant
   col={1,1,1,1}, def={1,1,1,1}, suf={} }
 -- World sweep state: the incremental folder walk plus the accumulators for the
 -- sweep in flight. Kept in one table so it costs a single module-level local.
-local W_SWEEP={tasks={},ti=1,ki=1,ch=nil,active=false,next_at=0,
+local W_SWEEP={tasks={},ti=1,ki=1,ch=nil,active=false,cool=0,
   next={loot={},base={},bags={},dropped={},nodes={},picks={},plants={},veh={}}}
 
 -- Cache key for an instance. Wrappers are NOT guaranteed to keep identity
@@ -1620,19 +1620,24 @@ W_CACHE.vehrules={
 }
 -- names that belong to the body-bag pass; the dropped pass skips them so one
 -- model is never drawn twice with two different colours.
-local W_BAG_PAT={"bodybag","body_bag","deathbag","lootbag","corpse","deadbody",
-  "dead_body","ragdoll","backpack","pack","sleepingbag","sleeping_bag"}
+local W_BAG_PAT={"bodybag","body_bag","deathbag","lootbag","loot_bag","lootsack",
+  "corpse","deadbody","dead_body","ragdoll","backpack","pack"}
 local function w_is_bag(lower)
   for i=1,#W_BAG_PAT do if lower:find(W_BAG_PAT[i],1,true) then return true end end
   return false
 end
+-- A dead player's bag is a model literally named "Backpack" (Canvas + Strap +
+-- LootPrompt) parked in Workspace.Deployables, so every backpack/lootsack name
+-- has to read as a body bag rather than as generic loot. Sleeping bags are a
+-- base deployable and stay with the Base pass, hence the early nil.
 local function w_bag_label(lower)
   if lower:find("sleepingbag",1,true) or lower:find("sleeping_bag",1,true) then return nil end
-  if lower:find("bodybag",1,true) or lower:find("body_bag",1,true)
-    or lower:find("deathbag",1,true) or lower:find("lootbag",1,true) then return "Body Bag" end
   if lower:find("corpse",1,true) or lower:find("deadbody",1,true)
     or lower:find("dead_body",1,true) or lower:find("ragdoll",1,true) then return "Dead Body" end
-  if lower:find("backpack",1,true) or lower:find("pack",1,true) then return "Death Bag" end
+  if lower:find("backpack",1,true) or lower:find("lootsack",1,true)
+    or lower:find("loot_bag",1,true) or lower:find("lootbag",1,true)
+    or lower:find("bodybag",1,true) or lower:find("body_bag",1,true)
+    or lower:find("deathbag",1,true) or lower:find("pack",1,true) then return "Body Bag" end
 end
 
 -- resolve the part a model hangs its world position from. same candidate order
@@ -1645,9 +1650,15 @@ local function w_part(inst,key,extra)
   if not key then key=W_SWEEP.key(inst) end
   local cached=W_PART_CACHE[key]
   if cached then
-    -- stamp the entry so the prune at publish keeps it
-    cached.gen=W_CACHE.gen
-    return cached.p or nil
+    if cached.p then
+      -- stamp the entry so the prune at publish keeps it
+      cached.gen=W_CACHE.gen
+      return cached.p
+    end
+    -- A failed resolve is retried once per sweep instead of every frame: a model
+    -- whose parts stream in a moment later (a gun mid-spawn) used to stay
+    -- blacklisted for the whole session.
+    if cached.gen==W_CACHE.gen then return nil end
   end
   local p
   -- a rule can hand its own part order. vehicles need this: the minicopter
@@ -1711,14 +1722,50 @@ local function w_pos(inst,part,fixed,key)
   if fixed then W_FIX[key]={x=x,y=y,z=z,gen=W_CACHE.gen} end
   return x,y,z
 end
-local function w_folder(ws,name)
-  local f; pcall(function() f=ws:FindFirstChild(name) end)
-  return f
-end
+-- Children with the same fallbacks the NPC scanner uses: method names are
+-- unrolled rather than looked up from a fresh table, because this runs once per
+-- folder per sweep and the tables were pure garbage.
 local function w_children(folder)
   if not folder then return nil end
-  local ch; pcall(function() ch=folder:GetChildren() end)
-  if type(ch)=="table" then return ch end
+  local fn=folder.GetChildren
+  if type(fn)=="function" then
+    local ok,ch=pcall(fn,folder)
+    if ok and type(ch)=="table" then return ch end
+  end
+  fn=folder.get_children
+  if type(fn)=="function" then
+    local ok,ch=pcall(fn,folder)
+    if ok and type(ch)=="table" then return ch end
+  end
+  return nil
+end
+-- Folder lookup with the same fallbacks. A build that does not expose
+-- FindFirstChild on a wrapper used to answer nil for every folder, which made
+-- the sweep publish an empty snapshot and left the whole World tab blank.
+local function w_folder(ws,name)
+  if not ws then return nil end
+  local fn=ws.FindFirstChild
+  if type(fn)=="function" then
+    local ok,f=pcall(fn,ws,name)
+    if ok and f then return f end
+  end
+  fn=ws.find_first_child
+  if type(fn)=="function" then
+    local ok,f=pcall(fn,ws,name)
+    if ok and f then return f end
+  end
+  local okg,f=pcall(PF.get,ws,name)
+  if okg and f then return f end
+  -- last resort: one cached top-level walk per sweep, not one per folder
+  local ch=W_SWEEP.wsch
+  if ch==nil then ch=w_children(ws); W_SWEEP.wsch=ch end
+  if ch then
+    for i=1,#ch do
+      local c=ch[i]
+      local okn,nm=pcall(PF.name,c)
+      if okn and nm==name then return c end
+    end
+  end
   return nil
 end
 -- the colour id travels with the entry, so the swatch is read at draw time and
@@ -1768,8 +1815,20 @@ end
 -- the map.
 -- ---------------------------------------------------------------------------
 function W_SWEEP.begin()
-  local ws; pcall(function() ws=game.Workspace end)
+  -- Same Workspace resolution chain the NPC scanner uses. game.Workspace is not
+  -- exposed on every build (the NPC pass already carries these fallbacks), and
+  -- when it came back nil every folder lookup failed, so the sweep published an
+  -- empty snapshot forever and the whole World tab drew nothing.
+  local ws
+  pcall(function()
+    if game then
+      ws=game.Workspace or game.workspace
+      if not ws and game.GetService then ws=game:GetService("Workspace") end
+    end
+  end)
+  if not ws then ws=workspace end
   if not ws then return false end
+  W_SWEEP.wsch=nil
   -- one generation per sweep: the part/position caches stamp what they touch
   -- and everything older is pruned at publish
   W_CACHE.gen=W_CACHE.gen+1
@@ -1778,19 +1837,29 @@ function W_SWEEP.begin()
   -- containers answer to Enable Loot ESP, deployables to the Base master. one
   -- sweep keeps a model that matches a rule in both tables from being pushed and
   -- drawn twice, so the first table that owns the name wins.
-  if cfg.loot_on or cfg.base_on then
+  -- Deployables is walked for the bag pass too: a dead player's bag is a
+  -- "Backpack" model parked in there, so without this folder the bag pass never
+  -- saw a single player body bag.
+  if cfg.loot_on or cfg.base_on or cfg.bags_on then
     tasks[#tasks+1]={kind="lootbase",folder=w_folder(ws,"Loot")}
     tasks[#tasks+1]={kind="lootbase",folder=w_folder(ws,"Deployables")}
   end
   if cfg.bags_on then
-    local folders={"WorldItems","DroppedItems","Dropped","Debris","Corpses","DeadBodies","Bags","Dead"}
+    local folders={"WorldItems","DroppedItems","Dropped","Debris","Corpses",
+      "DeadBodies","Bags","Dead","LootBags","DeathBags"}
     for fi=1,#folders do tasks[#tasks+1]={kind="bags",folder=w_folder(ws,folders[fi])} end
-    -- top-level corpses and bags, matching hub's second sweep. sleeping bags are
-    -- left to the loot pass so the same deployable is not drawn twice.
+  end
+  -- top-level sweep: corpses and backpacks that are not inside a container
+  -- folder, plus dropped Tools. A gun dropped straight to Workspace keeps its
+  -- Tool class instead of becoming a WorldItems model, so nothing else would
+  -- ever see it. Player inventory tools live under the character Model, never
+  -- at the top level, so a top-level Tool is always loose loot.
+  if cfg.bags_on or cfg.drop_on then
     tasks[#tasks+1]={kind="bags_top",folder=ws}
   end
   if cfg.drop_on then
-    local folders={"WorldItems","DroppedItems","Dropped"}
+    local folders={"WorldItems","DroppedItems","Dropped","Debris","LooseItems",
+      "ItemDrops","Drops"}
     for fi=1,#folders do tasks[#tasks+1]={kind="dropped",folder=w_folder(ws,folders[fi])} end
   end
   if cfg.nodes_on then
@@ -1837,9 +1906,17 @@ function W_SWEEP.take(kind,inst)
         local rule=W_BASE[k]
         if lower:find(rule[1],1,true) then
           if cfg[rule[2]] then w_push(nx.base,inst,rule[3],rule[4],true) end
-          break
+          hit=true; break
         end
       end
+    end
+    -- Player body bags live in Deployables as a model named "Backpack". It
+    -- matches no loot or base rule, so the bag pass has to claim it here. The
+    -- loot/base rules run first, which keeps a SleepingBag under Base where it
+    -- belongs.
+    if not hit and cfg.bags_on then
+      local label=w_bag_label(lower)
+      if label then w_push(nx.bags,inst,label,"c_bodybag") end
     end
   elseif kind=="bags" then
     local label=w_bag_label((inst.Name or ""):lower())
@@ -1847,9 +1924,17 @@ function W_SWEEP.take(kind,inst)
   elseif kind=="bags_top" then
     local lower=(inst.Name or ""):lower()
     if lower:find("corpse",1,true) or lower:find("bodybag",1,true)
-      or lower:find("deadbody",1,true) or lower:find("ragdoll",1,true) then
-      local label=w_bag_label(lower)
-      if label then w_push(nx.bags,inst,label,"c_bodybag") end
+      or lower:find("body_bag",1,true) or lower:find("deadbody",1,true)
+      or lower:find("dead_body",1,true) or lower:find("ragdoll",1,true)
+      or lower:find("backpack",1,true) or lower:find("lootsack",1,true)
+      or lower:find("loot_bag",1,true) or lower:find("deathbag",1,true) then
+      if cfg.bags_on then
+        local label=w_bag_label(lower)
+        if label then w_push(nx.bags,inst,label,"c_bodybag") end
+      end
+    elseif cfg.drop_on and inst.ClassName=="Tool" then
+      -- Loose tool: a dropped gun/hatchet that stayed a Tool in Workspace.
+      w_push(nx.dropped,inst,inst.Name or "Item","c_dropped")
     end
   elseif kind=="dropped" then
     local iname=inst.Name or "Item"
@@ -1894,7 +1979,11 @@ function W_SWEEP.publish()
   W_CACHE.picks=nx.picks; W_CACHE.plants=nx.plants; W_CACHE.veh=nx.veh
   W_SWEEP.next={loot={},base={},bags={},dropped={},nodes={},picks={},plants={},veh={}}
   W_SWEEP.active=false
-  W_SWEEP.next_at=now()+1
+  -- Cadence in frames, not seconds. now() reads utility.GetTime and falls back to
+  -- os.clock(); GetTime is frame-granular on some builds and a frozen clock used
+  -- to park the sweep on a deadline it could never reach, which emptied the
+  -- entire World tab. 60 frames is the same ~1 s wait at 60 fps.
+  W_SWEEP.cool=60
   W_SWEEP.tasks={}; W_SWEEP.ti=1; W_SWEEP.ki=1; W_SWEEP.ch=nil
   -- Anything not touched by the sweep that just finished is dropped. Address
   -- keys make this exact: one entry per live object, not one per wrapper per
@@ -1908,8 +1997,10 @@ function W_SWEEP.step()
   if not W_SWEEP.active then
     -- same one-second cadence the old single-frame refresh had: the total work
     -- per second is unchanged, it is just spread over the frames in between
-    -- instead of landing on one frame
-    if now()<W_SWEEP.next_at then return end
+    -- instead of landing on one frame. The wait is counted in frames so it can
+    -- never be stuck behind a clock that does not advance.
+    local c=W_SWEEP.cool
+    if c and c>0 then W_SWEEP.cool=c-1; return end
     if not W_SWEEP.begin() then return end
   end
   local budget=24      -- children visited this frame
@@ -4686,4 +4777,3 @@ function OnFrame()
 end
 
 pcall(function() notify.Success("Fust Survival v1.0 loaded","Right Shift to toggle menu",5) end)
-
