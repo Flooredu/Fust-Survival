@@ -26,9 +26,18 @@ local function to_hsv(c) local r,g,b=c[1],c[2],c[3]; local mx=math.max(r,g,b); l
 -- a lot is on screen. With chroma off the colour depends only on the base swatch
 -- and the alpha, so every target can share one table.
 local COL_MEM={}
+-- Chroma path: one scratch table, refilled per call. Every caller hands the
+-- result straight to a draw call (which copies the channels immediately), so
+-- sharing the buffer removes the table chroma used to allocate several times per
+-- target per frame - the GC churn behind the stutter on a busy screen.
+local COL_SCR={1,1,1,1}
 local function hue_or(ch,base,al)
   al=(al or 1)*theme.opacity
-  if ch then return {ch[1],ch[2],ch[3],(base[4] or 1)*al} end
+  if ch then
+    local c=COL_SCR
+    c[1]=ch[1]; c[2]=ch[2]; c[3]=ch[3]; c[4]=(base[4] or 1)*al
+    return c
+  end
   local m=COL_MEM[base]
   if not m then m={}; COL_MEM[base]=m end
   local c=m[al]
@@ -40,7 +49,18 @@ local function hue_or(ch,base,al)
 end
 
 local _dt=0.016
+-- Metres per stud, declared up here because the slider widget needs it before
+-- PF exists. The game's own distance readouts - the kill feed, the compass
+-- markers and the sea-depth chip - all print raw studs with an "m" suffix, so
+-- to the player one stud is one "game metre". Everything the player reads is
+-- therefore printed in studs, while cfg range values stay in real metres so a
+-- saved profile keeps the world distance it was tuned with.
+local M_PER_STUD=0.28
 local anim={}
+-- Global frame counter. now() can be frozen on some builds, so every cadence in
+-- the ESP passes (staggered health reads, slow live-position refreshes) counts
+-- frames instead of seconds. It is bumped once at the top of OnFrame.
+local FRAME=0
 local function approach(k,target,spd) local v=anim[k]; if v==nil then v=target end
   v=v+(target-v)*clamp(_dt*(spd or 12),0,1); anim[k]=v; return v end
 
@@ -92,7 +112,9 @@ local SCHEMA = {
     {t="combo",id="aim_priority",label="Target Priority",items={"Crosshair","Distance","Low HP"},default=1},
     {t="combo",id="aim_fovstyle",label="FOV Style",items={"Circle","Box","Diamond","Corner Box"},default=1},
     {t="slider",id="aim_fov",label="FOV",min=5,max=900,default=160,suf="px"},
-    {t="slider",id="aim_range",label="Aimbot Range",min=20,max=1500,default=1500,suf="m"},
+    -- 1500*M_PER_STUD is 1500 game metres in the stored real-metre units, so the
+    -- row prints "1500 m" and the cull stops at 1500 studs
+    {t="slider",id="aim_range",label="Aimbot Range",min=20,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m"},
     {t="slider",id="aim_smooth",label="Smoothing",min=1,max=50,default=8},
     {t="slider",id="aim_dz",label="Deadzone",min=0,max=20,default=0,suf="px"},
     {t="toggle",id="aim_team",label="Team Check",default=true},
@@ -123,7 +145,7 @@ local SCHEMA = {
     {t="slider",id="esp_pic_opacity",label="Picture Opacity",min=10,max=100,default=100,suf="%",show=function() return cfg.esp_boxstyle==3 end},
     {t="toggle",id="esp_skel",label="Skeleton",default=true,color="c_enemy"},
     {t="toggle",id="esp_headdot",label="Head Dot",default=false},
-    {t="slider",id="esp_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%"},
+    {t="slider",id="esp_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%",show=function() return cfg.esp_headdot end},
     {t="toggle",id="chams_on",label="Chams",color="c_chams"},
     {t="combo",id="chams_mode",label="Chams Style",items={"Filled","Outline"},default=1},
     {t="toggle",id="esp_name",label="Name",default=true,color="c_name"},
@@ -132,12 +154,13 @@ local SCHEMA = {
     {t="toggle",id="esp_hptext",label="Health Text",default=false,show=function() return cfg.esp_hp end},
     {t="toggle",id="esp_weapon",label="Held item",default=true,color="c_weapon"},
     {t="toggle",id="esp_team",label="Team Check",default=true},
-    {t="slider",id="esp_maxdist",label="Max Distance",min=0,max=1500,default=1500,suf="m"},
+    -- same cap as the aimbot: 1500 game metres, which is 1500 studs to the cull
+    {t="slider",id="esp_maxdist",label="Player Range",min=0,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m"},
     {t="slider",id="esp_textsize",label="Text Size",min=9,max=18,default=12},
   }},
   {name="Extras", col=2, items={
     {t="toggle",id="esp_hat",label="China Hat",default=false,color="c_hat"},
-    {t="slider",id="esp_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%"},
+    {t="slider",id="esp_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.esp_hat end},
     {t="toggle",id="esp_tracer",label="Tracers",color="c_tracer"},
     {t="combo",id="esp_tracer_from",label="Tracer Origin",items={"Bottom","Center","Top"},default=1},
     {t="toggle",id="esp_chroma",label="Chroma Visuals"},
@@ -145,7 +168,7 @@ local SCHEMA = {
   {name="Radar", col=2, items={
     {t="toggle",id="rad_on",label="Enable Radar"},
     {t="slider",id="rad_size",label="Size",min=90,max=280,default=160},
-    {t="slider",id="rad_range",label="Range",min=10,max=150,default=50,suf="m"},
+    {t="slider",id="rad_range",label="Range",min=10,max=500*M_PER_STUD,default=50,suf="m"},
     {t="slider",id="rad_x",label="X Pos",min=0,max=100,default=88,suf="%"},
     {t="slider",id="rad_y",label="Y Pos",min=0,max=100,default=8,suf="%"},
     {t="slider",id="rad_alpha",label="Opacity",min=20,max=100,default=80,suf="%"},
@@ -154,14 +177,13 @@ local SCHEMA = {
 {name="NPC ESP", groups={
   {name="NPCs", col=1, items={
     {t="toggle",id="npc_esp_enabled",label="Enable NPC ESP",default=false},
-    {t="toggle",id="npc_soldier",label="Soldiers / Scientists",default=false},
     {t="toggle",id="npcs_heli",label="Patrol Heli",default=true,color="npc_heli_col",show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npcs_show_name",label="Name",default=true,color="npc_name_col",show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npc_tag",label="Npc tag",default=false,color="npc_tag_col",show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npcs_show_dist",label="Distance",default=false,color="npc_dist_col",show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npc_skeleton",label="Skeleton",default=false,color="npc_skel_col",show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npc_headdot",label="Head Dot",default=false,show=function() return cfg.npc_esp_enabled end},
-    {t="slider",id="npc_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%",show=function() return cfg.npc_esp_enabled end},
+    {t="slider",id="npc_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%",show=function() return cfg.npc_esp_enabled and cfg.npc_headdot end},
     {t="toggle",id="npcs_show_health",label="Health Bar",default=false,show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npc_box",label="Box",default=false,color="npc_box_col",show=function() return cfg.npc_esp_enabled end},
     {t="combo",id="npc_boxstyle",label="Box Style",items={"Corner","Full","Picture"},default=1,show=function() return cfg.npc_esp_enabled end},
@@ -169,10 +191,10 @@ local SCHEMA = {
     {t="slider",id="npc_pic_opacity",label="Picture Opacity",min=10,max=100,default=100,suf="%",show=function() return cfg.npc_esp_enabled and cfg.npc_boxstyle==3 end},
   }},
   {name="Settings", col=2, items={
-    {t="slider",id="npcs_max_dist",label="Max Distance",min=0,max=400,default=400,suf="m"},
+    {t="slider",id="npcs_max_dist",label="NPC Range",min=0,max=300*M_PER_STUD,default=300*M_PER_STUD,suf="m"},
     {t="slider",id="npcs_font_size",label="Text Size",min=9,max=18,default=13},
     {t="toggle",id="npc_hat",label="China Hat",default=false,color="npc_hat_col",show=function() return cfg.npc_esp_enabled end},
-    {t="slider",id="npc_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.npc_esp_enabled end},
+    {t="slider",id="npc_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.npc_esp_enabled and cfg.npc_hat end},
     {t="toggle",id="npc_chroma",label="Chroma NPC",default=false,show=function() return cfg.npc_esp_enabled end},
   }},
 }},
@@ -185,7 +207,7 @@ local SCHEMA = {
     {t="toggle",id="loot_military",label="Military",default=true,color="c_lootmilitary"},
     {t="toggle",id="loot_elite",label="Elite",default=true,color="c_lootelite"},
     {t="toggle",id="loot_dist",label="Show Distance",default=true},
-    {t="slider",id="loot_range",label="Loot Range",min=0,max=310,default=170,suf="m"},
+    {t="slider",id="loot_range",label="Loot Range",min=0,max=400*M_PER_STUD,default=400*M_PER_STUD,suf="m"},
     {t="slider",id="loot_text",label="Loot Text Size",min=9,max=18,default=12},
   }},
   {name="Base", col=1, items={
@@ -195,15 +217,18 @@ local SCHEMA = {
     {t="toggle",id="loot_tc",label="Tool Cupboard",default=true,color="c_loottc"},
     {t="toggle",id="loot_locker",label="Locker",default=true,color="c_lootlocker"},
     {t="toggle",id="loot_bag",label="Sleeping Bag",default=true,color="c_lootbag"},
+    {t="toggle",id="base_shotguntrap",label="Shotgun Trap",default=true,color="c_baseshotguntrap"},
+    {t="toggle",id="base_autoturret",label="Auto Turret",default=true,color="c_baseautoturret"},
+    {t="toggle",id="base_aaturret",label="AA Turret",default=true,color="c_baseaaturret"},
     {t="toggle",id="base_dist",label="Show Distance",default=true},
-    {t="slider",id="base_range",label="Base Range",min=0,max=90,default=60,suf="m"},
+    {t="slider",id="base_range",label="Base Range",min=0,max=175*M_PER_STUD,default=175*M_PER_STUD,suf="m"},
     {t="slider",id="base_text",label="Base Text Size",min=9,max=18,default=12},
   }},
   {name="Body Bags & Dropped", col=2, items={
     {t="toggle",id="bags_on",label="Enable Body Bags",color="c_bodybag"},
     {t="toggle",id="drop_on",label="Enable Dropped Items",color="c_dropped"},
     {t="toggle",id="bd_dist",label="Show Distance"},
-    {t="slider",id="bd_range",label="Body Bags & Dropped Items Range",min=0,max=230,default=170,suf="m"},
+    {t="slider",id="bd_range",label="Body Bags & Dropped Items Range",min=0,max=400*M_PER_STUD,default=400*M_PER_STUD,suf="m"},
     {t="slider",id="bd_text",label="Bags & Dropped Items Text Size",min=9,max=18,default=12},
     {t="note",label="Chip sets each category colour."},
   }},
@@ -213,7 +238,7 @@ local SCHEMA = {
     {t="toggle",id="node_sulfur",label="Sulfur Nodes",color="c_nodesulfur"},
     {t="toggle",id="node_iron",label="Metal / Iron",color="c_nodeiron"},
     {t="toggle",id="nodes_dist",label="Node Distance"},
-    {t="slider",id="nodes_range",label="Node Range",min=0,max=150,default=120,suf="m"},
+    {t="slider",id="nodes_range",label="Node Range",min=0,max=500*M_PER_STUD,default=120,suf="m"},
     {t="slider",id="nodes_text",label="Node Text Size",min=9,max=18,default=13},
   }},
   {name="Pickups", col=1, items={
@@ -221,7 +246,7 @@ local SCHEMA = {
     {t="toggle",id="pick_ores",label="Loose Ores",color="c_pickores"},
     {t="toggle",id="pick_wood",label="Wood Logs",color="c_pickwood"},
     {t="toggle",id="pick_dist",label="Pickup Distance"},
-    {t="slider",id="pick_range",label="Pickup Range",min=0,max=90,default=60,suf="m"},
+    {t="slider",id="pick_range",label="Pickup Range",min=0,max=150*M_PER_STUD,default=150*M_PER_STUD,suf="m"},
     {t="slider",id="pick_text",label="Pickups Text Size",min=9,max=18,default=12},
   }},
   {name="Food & Plants", col=2, items={
@@ -235,7 +260,7 @@ local SCHEMA = {
     {t="toggle",id="pick_potato",label="Potato",color="c_pickpotato"},
     {t="toggle",id="pick_apple",label="Apple",color="c_pickapple"},
     {t="toggle",id="plants_dist",label="Show Distance"},
-    {t="slider",id="plants_range",label="Plants & Food Range",min=0,max=90,default=60,suf="m"},
+    {t="slider",id="plants_range",label="Plants & Food Range",min=0,max=200*M_PER_STUD,default=200*M_PER_STUD,suf="m"},
     {t="slider",id="plants_text",label="Plants & Food",min=9,max=18,default=12},
   }},
   {name="Vehicles", col=2, items={
@@ -244,7 +269,7 @@ local SCHEMA = {
     {t="toggle",id="veh_boats",label="Boats",default=true,color="c_veh_boat"},
     {t="toggle",id="veh_heli",label="Minicopters",default=true,color="c_veh_heli"},
     {t="toggle",id="veh_dist",label="Show Distance",default=true},
-    {t="slider",id="veh_range",label="Vehicle Range",min=0,max=400,default=400,suf="m"},
+    {t="slider",id="veh_range",label="Vehicle Range",min=0,max=1000*M_PER_STUD,default=1000*M_PER_STUD,suf="m"},
     {t="slider",id="veh_text",label="Vehicles Text Size",min=9,max=18,default=12},
   }},
 }},
@@ -315,12 +340,13 @@ local DEF_COL={ c_fov={0.45,0.78,1,1}, c_tline={0.45,0.78,1,1},
   c_chams={1.0,0.22,0.34,1},
   npc_soldier_col={0.25,0.85,1.00,1}, npc_heli_col={1.00,0.20,0.20,1},
   npc_skel_col={1.00,0.35,0.35,1}, npc_hat_col={0.99,0.78,0.36,1}, npc_name_col={0.25,0.85,1.00,1}, npc_dist_col={0.25,0.85,1.00,1}, npc_box_col={0.45,0.78,1,1}, npc_tag_col={1.00,0.85,0.35,1},
-  c_bad={1.00,0.20,0.20,1},
   c_lootbarrels={0.25,0.75,1.00,1}, c_lootcrates={0.95,0.70,0.25,1},
   c_lootmilitary={0.20,1.00,0.40,1}, c_lootelite={0.95,0.25,0.45,1},
   c_lootlargebox={0.95,0.65,0.20,1}, c_lootsmallbox={0.85,0.50,0.15,1},
   c_loottc={0.20,0.85,1.00,1}, c_lootlocker={0.70,0.75,0.90,1},
   c_lootbag={0.45,0.90,0.65,1},
+  c_baseshotguntrap={1.00,0.55,0.20,1}, c_baseautoturret={1.00,0.30,0.35,1},
+  c_baseaaturret={0.85,0.45,1.00,1},
   c_bodybag={0.90,0.25,0.35,1}, c_dropped={1.0,0.4,0.9,1},
   c_nodestone={0.85,0.85,0.90,1}, c_nodesulfur={0.95,0.85,0.20,1},
   c_nodeiron={0.45,0.75,1.00,1},
@@ -486,7 +512,11 @@ local function w_toggle(it,x,y,w)
 end
 local function w_slider(it,x,y,w)
   local top=34; local v=cfg[it.id]
-  local disp=string.format("%.0f",v)..(it.suf and (" "..it.suf) or ""); local dw=ts(disp,12)
+  -- A range row is stored in real metres, but the distances drawn on screen are
+  -- the game's own figures (studs), so a metre row prints the game value or the
+  -- menu would disagree with the labels it controls.
+  local dv=(it.suf=="m") and v/M_PER_STUD or v
+  local disp=string.format("%.0f",dv)..(it.suf and (" "..it.suf) or ""); local dw=ts(disp,12)
   -- long labels (Body Bags & Dropped Items Range) step down a point at a time
   -- instead of running under the value readout
   local lsz=13
@@ -792,22 +822,16 @@ local ESP_SKEL={
   -- R6 fallbacks: same table, missing bones are simply skipped
   {"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},
 }
--- teammates only exist when both sides are on a team; a teamless NPC is never
--- treated as friendly just because the local player has no team either
-local function esp_mate(p,lp)
-  if not (lp and lp.HasTeam and p.HasTeam) then return false end
-  return p.Team==lp.Team
-end
-
 -- Property readers used through pcall(fn, arg). The per-player closures these
 -- replace were allocated every frame for every player, which is the other half
 -- of the GC churn behind the occasional stutter when a lot is on screen.
 local PF={
-  -- studs per metre. Every range row in the menu and every distance readout is
-  -- metres; every engine value (position, DistanceTo, muzzle velocity) is studs.
-  -- All conversions go through this one number so the UI can never disagree with
-  -- the cull that uses it.
-  m=0.28,
+  -- real metres per stud, used only to turn a stored range into the studs the
+  -- engine compares against. Distance labels do not use it: the game's own
+  -- readouts count one stud as one metre, so a label prints the raw stud figure
+  -- and matches the kill feed exactly. All range conversions still go through
+  -- this one number so the UI can never disagree with the cull that uses it.
+  m=M_PER_STUD,
   dist=function(p) return p:DistanceTo() end,
   name=function(p) return p.Name end,
   tool=function(p) return p.ToolName end,
@@ -823,6 +847,11 @@ local PF={
   cframe=function(o) return o.CFrame end,
   cfpos=function(cf) return cf.Position end,
   pos=function(o) return o.Position end,
+  -- live root velocity as three scalars. This is the exact travel speed the
+  -- lead needs, with none of the animation noise a bone-to-bone delta carries.
+  -- Instances (NPC rigs) have no Velocity, so the call errors and the lead
+  -- falls back to the old frame-delta estimate.
+  vel=function(p) local v=p.Velocity return v.X,v.Y,v.Z end,
   addr=function(o) return o.Address end,
   cls=function(o) return o.ClassName end,
   prim=function(o) return o.PrimaryPart end,
@@ -840,6 +869,12 @@ local PF={
   -- reused scratch buffers for the china-hat ring, so it stops allocating two
   -- tables per player per frame
   xs={}, ys={},
+  -- radar distance-label cache: the string and its measured width per whole
+  -- metre, plus a second scratch colour for the facing tick
+  rdtxt={}, rdw={}, rct={1,1,1,1},
+  -- team roster cache for esp_mate. Lives here rather than in a main-chunk
+  -- local because the chunk is already at the 200-local limit.
+  team={ids={},next=0,tf=nil},
 }
 -- Player skeleton without GetBonesScreen. That call returns a fresh
 -- {boneName -> {x,y}} dictionary for every player every frame - roughly 17
@@ -854,6 +889,10 @@ PF.bone_names={"Head","UpperTorso","LowerTorso",
   "Torso","Left Arm","Right Arm","Left Leg","Right Leg"}
 PF.bone_idx={}
 PF.bone_links={}
+-- unit circle for the analytic China Hat (both the player and NPC passes lay the
+-- brim ring out in screen space, so the cos/sin pairs are computed once here
+-- instead of 16 times per target per frame)
+PF.hc,PF.hs={},{}
 -- built inside a function so its loop variables do not eat into the main
 -- chunk's 200-local budget
 ;(function()
@@ -865,8 +904,72 @@ PF.bone_links={}
     local b=PF.bone_idx[ESP_SKEL[i][2]]
     if a and b then L[#L+1]={a,b} end
   end
+  for i=1,16 do
+    local t=(i-1)/16*math.pi*2
+    PF.hc[i]=math.cos(t); PF.hs[i]=math.sin(t)
+  end
 end)()
 PF.px,PF.py,PF.pok={},{},{}
+-- Team check. This place does not use Roblox's Teams service, so the cached
+-- Team/HasTeam fields are empty for everyone and a string compare never matches.
+-- Fust's own team system is client-side: the FustTeam LocalScript tags every
+-- online teammate with a Part named "Tag<userId>" under
+-- workspace.CurrentCamera.FustTeamTags, and the game's own friendly test (in the
+-- place source) is exactly that lookup. Reading the same folder keeps aimbot,
+-- trigger and ESP in agreement with the game. The roster only changes when
+-- someone joins or leaves a team, so the id set is cached and rebuilt every
+-- PF.team.step calls: this runs once per player in four passes, and a
+-- FindFirstChild per call showed up in the frame budget.
+local function esp_mate(p,lp)
+  local id=p and p.UserId
+  if not id and p and p.Player then id=p.Player.UserId end
+  if not id then return false end
+  if lp and lp.UserId==id then return true end
+  local t=PF.team
+  -- Rebuild on a frame cadence, not a call count. This runs once per player in
+  -- four passes, so a 60-call budget rebuilt the roster almost every frame; the
+  -- closure and the per-tag substrings from that were steady garbage. The team
+  -- roster only changes when someone joins or leaves a team, so once a second is
+  -- plenty.
+  if FRAME>=t.next then
+    t.next=FRAME+60
+    local ids=t.ids
+    for k in pairs(ids) do ids[k]=nil end
+    -- pcall: a build whose instance wrapper refuses CurrentCamera or the folder
+    -- must not take the ESP/aim frame down. On failure tf stays nil and the
+    -- cached Team field below is used instead.
+    local tf
+    pcall(function()
+      local cw=nil
+      if game and game.Workspace then cw=game.Workspace.CurrentCamera end
+      if not cw and workspace then cw=workspace.CurrentCamera end
+      tf=cw and cw:FindFirstChild("FustTeamTags")
+      if not tf then
+        local ws=nil
+        if game and game.Workspace then ws=game.Workspace end
+        if not ws and workspace then ws=workspace end
+        tf=ws and ws:FindFirstChild("FustTeamTags")
+      end
+      if tf then
+        local list=tf:GetChildren()
+        for _,ch in ipairs(list) do
+          local nm=ch and ch.Name
+          if nm and nm:sub(1,3)=="Tag" then
+            local uid=tonumber(nm:sub(4))
+            if uid then ids[uid]=true end
+          end
+        end
+      end
+    end)
+    t.tf=tf
+  end
+  if t.ids[id] then return true end
+  -- No tag folder at all: the team module is not running, so fall back to the
+  -- cached Team field in case this place ever moves to the Teams service.
+  if t.tf then return false end
+  if not (lp and lp.HasTeam and p.HasTeam) then return false end
+  return p.Team==lp.Team
+end
 -- precomputed red->green ramp for the health number, so the per-player mix()
 -- does not allocate three tables every frame
 local HP_RAMP={}
@@ -905,19 +1008,86 @@ local function pic_image() return tex_get(pic_lebron,PIC_URL,PIC_URL_ALT) end
 local function chuck_image() return tex_get(pic_chuck,CHUCK_URL) end
 local function king_image() return tex_get(pic_king,KING_URL) end
 
-local function run_esp()
-  if not cfg.esp_on then return end
-  local sw,sh=scr(); local hw=sw*0.5
-  local lp; pcall(function() lp=entity.GetLocalPlayer() end)
-  local ok,players=pcall(entity.GetPlayers)
-  if not ok or type(players)~="table" then return end
-  local tsz=cfg.esp_textsize or 12
-  local md=(cfg.esp_maxdist or 1500)/PF.m
-  -- 0 means "show nothing": the slider is an on/off gate at the bottom of its
-  -- travel, so nothing renders at all instead of everything
-  if md<=0 then return end
-  local chroma_on=cfg.esp_chroma
-  local chue=now()*0.12
+-- Per-frame scratch for the player passes. One table so the per-player bodies
+-- can be plain functions (pcall(esp_player,p)) instead of closures allocated for
+-- every player every frame: that churn was half of the overlay jitter on a full
+-- lobby. f = player ESP, c = chams, ch = chroma scratch, txt = text widths,
+-- dt = distance labels, hp = staggered health.
+local ESP_S={f={},c={},ch={1,1,1,1},txt={},dt={},hp={}}
+-- Resolve the origin and the camera forward vector once per pass. Distances are
+-- measured from the local player's root (the same point DistanceTo uses), with
+-- the camera only as a fallback, and the forward vector powers the
+-- behind-camera cull: a target behind the eye cannot project a single bone.
+local function esp_view(F)
+  local lp
+  pcall(function() lp=entity.GetLocalPlayer() end)
+  local lx,ly,lz
+  if lp then
+    local okp,pv=pcall(PF.pos,lp)
+    if okp and pv then lx,ly,lz=pv.X or pv.x,pv.Y or pv.y,pv.Z or pv.z end
+  end
+  if not lx then
+    local cp
+    pcall(function() cp=camera.GetPosition() end)
+    if cp then lx,ly,lz=cp.X,cp.Y,cp.Z end
+  end
+  if not lx then return false end
+  F.lp,F.lx,F.ly,F.lz=lp,lx,ly,lz
+  -- Eye position for the behind-camera cull. It has to come from the camera, not
+  -- from the player root: in third person (and freecam) the eye sits several
+  -- studs behind the root, so a root-relative test drops targets that are on
+  -- screen just behind the player.
+  local cx,cy,cz
+  pcall(function()
+    local cp=camera.GetPosition()
+    if cp then cx,cy,cz=cp.X,cp.Y,cp.Z end
+  end)
+  F.cx,F.cy,F.cz=cx,cy,cz
+  local fx,fy,fz=0,0,0
+  local lv
+  pcall(function() lv=camera.GetLookVector() end)
+  if lv then fx,fy,fz=lv.X or 0,lv.Y or 0,lv.Z or 0 end
+  if fx*fx+fy*fy+fz*fz>1e-9 then
+    F.fx,F.fy,F.fz,F.dot=fx,fy,fz,true
+  else
+    F.dot=false
+  end
+  return true
+end
+-- Text width memo. GetTextSize is a host call and names/weapons repeat every
+-- frame, so each string is measured once per size.
+local function esp_tw(s,sz)
+  local e=ESP_S.txt[s]
+  if not e then e={}; ESP_S.txt[s]=e end
+  local w=e[sz]
+  if not w then w=ts(s,sz); e[sz]=w end
+  return w
+end
+local function esp_player(p)
+  local F=ESP_S.f
+  if p==F.lp or p.IsLocal then return end
+  if p.IsAlive==false then return end
+  -- Live root: the same number DistanceTo() returns, computed locally, and the
+  -- vector for the behind-camera cull. A target behind the eye skips the whole
+  -- rig - box, bones, hat and dot - before any bone call is made.
+  local pos=p.Position
+  if not pos then return end
+  local dx,dy,dz=pos.X-F.lx,pos.Y-F.ly,pos.Z-F.lz
+  local d2=dx*dx+dy*dy+dz*dz
+  if d2>F.md2 then return end
+  if F.dot then
+    -- Eye-relative when the camera position is known. If it is not, the root is
+    -- the only origin available, and the test is skipped inside 50 studs where
+    -- the third-person offset could otherwise flip the sign.
+    local ax,ay,az
+    if F.cx then ax,ay,az=pos.X-F.cx,pos.Y-F.cy,pos.Z-F.cz
+    else ax,ay,az=dx,dy,dz end
+    if ax*F.fx+ay*F.fy+az*F.fz<=0 and (F.cx or d2>2500) then return end
+  end
+  if F.team and esp_mate(p,F.lp) then return end
+  local dist=math.sqrt(d2)
+  local ch=nil
+  if F.chroma then ch=PF.hue_fill(ESP_S.ch,(F.chue+F.idx*0.07)%1,0.75,1) end
   local c_box=col.c_box or {0.45,0.78,1,1}
   local c_bone=col.c_enemy or {0.95,0.35,0.4,1}
   local c_name=col.c_name or {1,1,1,1}
@@ -925,223 +1095,257 @@ local function run_esp()
   local c_weapon=col.c_weapon or c_name
   local c_tr=col.c_tracer or c_bone
   local c_hat=col.c_hat or c_name
+  local tsz=F.tsz
+  local pname,ptool
+  local okn,nv=pcall(PF.name,p); if okn then pname=nv end
+  local okt,tv=pcall(PF.tool,p); if okt then ptool=tv end
+  local b
+  local okb,bv=pcall(PF.bounds,p); if okb then b=bv end
+  local bx,by,bw,bh
+  if b and b.valid and (b.w or 0)>1 and (b.h or 0)>1 then bx,by,bw,bh=b.x,b.y,b.w,b.h end
+  -- Head bone first: it feeds the anchor, the head dot and the hat.
+  local head_x,head_y
+  local okhb,hx,hy,hvis=pcall(PF.bonescreen,p,"Head")
+  if okhb and hx and hy and hvis~=false then head_x,head_y=hx,hy end
+  -- Pixels per stud at the target. The box height is a free first estimate; the
+  -- head probe below replaces it with the exact value whenever a head feature is
+  -- on. It also drives the skeleton LOD.
+  local pps=(bh and bh>0) and bh/5.6 or 0
+  if cfg.esp_hat or cfg.esp_headdot then
+    local okh,hv=pcall(PF.head,p)
+    if okh and hv then
+      local x2,y2,v2=draw.WorldToScreen(hv.X,hv.Y+1,hv.Z)
+      if v2 and type(y2)=="number" then
+        if head_y then
+          pps=math.abs(head_y-y2)
+        else
+          -- head bone was off the screen edge: project the head itself so the
+          -- hat and the dot still have an anchor
+          local x3,y3,v3=draw.WorldToScreen(hv.X,hv.Y,hv.Z)
+          if v3 then head_x,head_y=x3,y3; pps=math.abs(head_y-y2) end
+        end
+      end
+    end
+  end
+  -- China Hat: the brim ring and the apex are laid out in screen space from the
+  -- head point and pps. Same world offsets as the wireframe: brim 0.44 studs
+  -- above the head, apex 1.16 above it, brim radius 0.62. The one thing that has
+  -- to be projected rather than assumed is the brim's squash: a horizontal ring
+  -- seen by the camera is an ellipse, its height = width * sin(elevation). That
+  -- factor comes from the camera-to-head elevation below, so the hat reads as a
+  -- cone from above and closes to a line at eye level instead of always drawing
+  -- a flat circle.
+  local hat_apex
+  local hat_hs=0
+  local hat_sq=1
+  if cfg.esp_hat and head_x and pps>0 then
+    hat_hs=(cfg.esp_hat_size or 100)/100
+    hat_apex=head_y-1.16*hat_hs*pps
+    -- head sits ~1.5 studs above the root, which is the point we have here
+    if F.cy then
+      local ex,ey,ez=pos.X-F.cx,(pos.Y+1.5)-F.cy,pos.Z-F.cz
+      local el=math.sqrt(ex*ex+ey*ey+ez*ez)
+      if el>0.001 then hat_sq=math.abs(ey)/el end
+    elseif F.dot then
+      hat_sq=math.abs(F.fy)
+    end
+    if hat_sq>1 then hat_sq=1 end
+  end
+  if cfg.esp_box and bx then
+    local c=hue_or(ch,c_box,1)
+    local x0,y0,w0,h0=bx-2,by-2,bw+4,bh+4
+    if cfg.esp_boxstyle==1 then
+      if draw.CornerBox then draw.CornerBox(x0,y0,w0,h0,c) else draw.Rect(x0,y0,w0,h0,c,0,1) end
+    elseif cfg.esp_boxstyle==3 then
+      -- Picture: Lebron fills the box with his photo. the other two Picture
+      -- styles are plain boxes, so switching between them adds no extra fill.
+      local ps=cfg.esp_picstyle or 1
+      local tex
+      if ps==1 then tex=king_image() elseif ps==2 then tex=chuck_image() elseif ps==3 then tex=pic_image() end
+      if tex then
+        local pop=clamp(cfg.esp_pic_opacity or 100,10,100)/100
+        local al=math.floor(clamp(c[4],0,1)*pop*255+0.5)
+        local tr,tg,tb=255,255,255
+        if ch then
+          tr=math.floor(clamp(c[1],0,1)*255+0.5)
+          tg=math.floor(clamp(c[2],0,1)*255+0.5)
+          tb=math.floor(clamp(c[3],0,1)*255+0.5)
+        end
+        if al>0 then draw.Image(tex,x0,y0,w0,h0,tr,tg,tb,al) end
+      else
+        -- photo still downloading / failed to load: plain box for now
+        draw.Rect(x0,y0,w0,h0,c,0,1)
+      end
+    else draw.Rect(x0,y0,w0,h0,c,0,1) end
+  end
+  -- Health is refreshed once every three frames per player: a bar cannot show a
+  -- change faster than that, and two host reads per player per frame was pure
+  -- overhead. The cache is keyed by player name, which is unique in a server.
+  if cfg.esp_hp and bx then
+    local hh,mh=0,100
+    local he
+    if pname then
+      he=ESP_S.hp[pname]
+      if not he then he={hp=100,mhp=100,next=0}; ESP_S.hp[pname]=he end
+      if FRAME>=he.next then
+        local okh2,hv2=pcall(PF.hp,p); if okh2 and hv2 then he.hp=hv2 end
+        local okm2,mv2=pcall(PF.mhp,p); if okm2 and mv2 then he.mhp=mv2 end
+        he.next=FRAME+3
+      end
+      hh,mh=he.hp or 0,he.mhp or 100
+    else
+      local okh2,hv2=pcall(PF.hp,p); if okh2 and hv2 then hh=hv2 end
+      local okm2,mv2=pcall(PF.mhp,p); if okm2 and mv2 then mh=mv2 end
+    end
+    local gap=clamp(bw*0.12,1.5,5)
+    pcall(draw.HealthBar,bx-gap,by,bh,hh,mh)
+    if cfg.esp_hptext then
+      local fsz=math.max(8,tsz-3)
+      local frac=clamp(mh>0 and hh/mh or 0,0,1)
+      local ht=string.format("%d",math.floor(hh+0.5))
+      local tw2,th2=ts(ht,fsz)
+      local hc=HP_RAMP[math.floor(frac*20+0.5)]
+      draw.Text(math.max(1,bx-gap-10-tw2),by+(bh-th2)*0.5,ht,hue_or(ch,hc,1),fsz)
+    end
+  end
+  local anchor_x,anchor_y=head_x,head_y
+  local name_y=by and (by-tsz-4) or (anchor_y and anchor_y-tsz-6)
+  if hat_apex and (not name_y or hat_apex<name_y) then name_y=hat_apex-tsz-4 end
+  local cx = bx and (bx+bw*0.5) or anchor_x
+  if cfg.esp_name and pname and cx and name_y then
+    local tw=esp_tw(pname,tsz)
+    draw.Text(cx-tw*0.5,name_y,pname,hue_or(ch,c_name,1),tsz)
+  end
+  local stack_y=by and (by+bh+3) or (anchor_y and anchor_y+4)
+  if cfg.esp_dist and cx and stack_y then
+    -- studs, which are the game's own metres: the same number the kill feed
+    -- prints. The label and its width are memoised per whole metre.
+    local dm=math.floor(dist)
+    local de=ESP_S.dt[dm]
+    if not de then de={}; ESP_S.dt[dm]=de end
+    local dl=de.txt
+    if not dl then dl=dm.."m"; de.txt=dl end
+    local dsz=tsz-2
+    local dw=de[dsz]
+    if not dw then dw=ts(dl,dsz); de[dsz]=dw end
+    draw.Text(cx-dw*0.5,stack_y,dl,hue_or(ch,c_dist,0.9),dsz)
+    stack_y=stack_y+dsz+1
+  end
+  if cfg.esp_weapon and cx and stack_y and ptool and ptool~="" then
+    local wsz=tsz-2
+    local tw=esp_tw(ptool,wsz)
+    draw.Text(cx-tw*0.5,stack_y,ptool,hue_or(ch,c_weapon,0.9),wsz)
+  end
+  if cfg.esp_tracer then
+    local oy=(cfg.esp_tracer_from==1) and F.sh or ((cfg.esp_tracer_from==3) and 0 or F.sh*0.5)
+    local tx,ty
+    if bx then tx,ty=bx+bw*0.5,by+bh elseif anchor_x then tx,ty=anchor_x,anchor_y end
+    if tx then draw.Line(F.hw,oy,tx,ty,hue_or(ch,c_tr,1),1) end
+  end
+  -- Skeleton: skipped once the rig is only a few pixels tall (pps below 1 is
+  -- under ~6 px), where 20 bones and 18 links land on the same handful of pixels
+  -- but still cost the same reads and draws.
+  if cfg.esp_skel and (bx or head_x) and (pps<=0 or pps>=1.0) then
+    local px,py,pok=PF.px,PF.py,PF.pok
+    local names=PF.bone_names
+    local r15=false
+    for i=1,15 do
+      local okp,vx,vy,vis=pcall(PF.bonescreen,p,names[i])
+      -- cull here: a bone outside the frame is dropped before any line is built
+      if okp and vx and vy and vis~=false then
+        if vx>-8 and vy>-8 and vx<F.sw+8 and vy<F.sh+8 then
+          px[i],py[i],pok[i]=vx,vy,true
+          r15=true
+        else
+          pok[i]=nil
+        end
+      else
+        pok[i]=nil
+      end
+    end
+    -- The last five names are the R6 fallbacks. On an R15 rig they always miss,
+    -- so skipping them saves five host calls per player per frame.
+    for i=16,#names do
+      if r15 then
+        pok[i]=nil
+      else
+        local okp,vx,vy,vis=pcall(PF.bonescreen,p,names[i])
+        if okp and vx and vy and vis~=false and vx>-8 and vy>-8 and vx<F.sw+8 and vy<F.sh+8 then
+          px[i],py[i],pok[i]=vx,vy,true
+        else
+          pok[i]=nil
+        end
+      end
+    end
+    local c=hue_or(ch,c_bone,0.9)
+    local links=PF.bone_links
+    for i=1,#links do
+      local a,b=links[i][1],links[i][2]
+      if pok[a] and pok[b] then draw.Line(px[a],py[a],px[b],py[b],c,1) end
+    end
+  end
+  -- Head dot: the ring radius is 0.62 studs of head at the target's depth, which
+  -- is exactly what the old head-height probe measured - now read from pps.
+  if cfg.esp_headdot and head_x then
+    local hs=(cfg.esp_headdot_size or 100)/100
+    local hr=pps>0 and (0.62*hs*pps) or (bx and bh*0.11*hs or nil)
+    if hr and hr>0.4 then
+      local c=hue_or(ch,c_bone,1)
+      if hr<2.4 then
+        -- at this size the outline and its shadow overlap and read as a black
+        -- smudge on the head, so a filled pip keeps the colour
+        draw.CircleFilled(head_x,head_y,math.max(hr,1.6),c,10)
+      else
+        draw.Circle(head_x,head_y,hr,c,math.max(10,math.floor(hr*3)),1)
+      end
+    end
+  end
+  if hat_apex and pps>0 then
+    local rad=0.62*hat_hs*pps
+    local brimy=head_y-0.44*hat_hs*pps
+    local c=hue_or(ch,c_hat,1)
+    local sq=hat_sq
+    if rad<3 then
+      -- below ~3 px the rim segments and ribs land on the same pixels and the
+      -- black shadow pass wins, so one filled silhouette keeps the colour
+      if draw.PolyFilled then
+        draw.PolyFilled({{head_x,hat_apex},{head_x+rad,brimy},{head_x-rad,brimy}},c)
+      end
+    else
+      local hc,hsn=PF.hc,PF.hs
+      local xs,ys=PF.xs,PF.ys
+      local seg=rad<4 and 8 or (rad<12 and 12 or 16)
+      for i=1,seg do
+        local k=math.floor((i-1)*16/seg)+1
+        xs[i]=head_x+hc[k]*rad
+        ys[i]=brimy+hsn[k]*rad*sq
+      end
+      for i=1,seg do local j=i%seg+1; draw.Line(xs[i],ys[i],xs[j],ys[j],c,1) end
+      for i=1,seg,2 do draw.Line(head_x,hat_apex,xs[i],ys[i],c,1) end
+    end
+  end
+end
+
+local function run_esp()
+  if not cfg.esp_on then return end
+  -- 0 means "show nothing": the slider is an on/off gate at the bottom of its
+  -- travel, so nothing renders at all instead of everything
+  local md=(cfg.esp_maxdist or 1500)/PF.m
+  if md<=0 then return end
+  local F=ESP_S.f
+  local sw,sh=scr()
+  F.sw,F.sh,F.hw=sw,sh,sw*0.5
+  if not esp_view(F) then return end
+  F.md=md; F.md2=md*md
+  F.tsz=cfg.esp_textsize or 12
+  F.chroma=cfg.esp_chroma
+  F.chue=now()*0.12
+  F.team=cfg.esp_team
+  local ok,players=pcall(entity.GetPlayers)
+  if not ok or type(players)~="table" then return end
   for idx,p in ipairs(players) do
-    -- one pcall per player: a character that despawns mid-frame skips itself
-    -- instead of taking the whole ESP pass down
-    pcall(function()
-      if p==lp or p.IsLocal then return end
-      if p.IsAlive==false then return end
-      local mate=esp_mate(p,lp)
-      if mate and cfg.esp_team then return end
-      local dist=0
-      local okd,dv=pcall(PF.dist,p)
-      if okd and dv then dist=dv end
-      -- 0 was handled up front; anything above it is a hard cap in metres, and
-      -- md is already converted to the studs DistanceTo returns
-      if dist>md then return end
-      local ch=chroma_on and hsv((chue+idx*0.07)%1,0.75,1) or nil
-      local pname,ptool
-      local okn,nv=pcall(PF.name,p); if okn then pname=nv end
-      local okt,tv=pcall(PF.tool,p); if okt then ptool=tv end
-      local b
-      local okb,bv=pcall(PF.bounds,p); if okb then b=bv end
-      local bx,by,bw,bh
-      if b and b.valid and (b.w or 0)>1 and (b.h or 0)>1 then bx,by,bw,bh=b.x,b.y,b.w,b.h end
-      -- Head point first: it feeds the anchor, the head dot and the hat.
-      -- GetBoneScreen returns three scalars, so the anchor costs one host call
-      -- and no table, unlike the per-player bone dictionary it replaces.
-      local head_x,head_y
-      local okhb,hx,hy,hvis=pcall(PF.bonescreen,p,"Head")
-      if okhb and hx and hy and hvis~=false then head_x,head_y=hx,hy end
-      local anchor_x,anchor_y=head_x,head_y
-      -- world-space head vector, only read when the hat or the dot needs it
-      local hp
-      if cfg.esp_hat or cfg.esp_headdot then
-        local okh,hv=pcall(PF.head,p); if okh then hp=hv end
-      end
-      -- hat first: the name has to clear the apex or it hides the cone
-      local hat_x,hat_y,hat_v
-      if cfg.esp_hat and hp then
-        local hs=(cfg.esp_hat_size or 100)/100
-        hat_x,hat_y,hat_v=draw.WorldToScreen(hp.X,hp.Y+1.16*hs,hp.Z)
-      end
-      if cfg.esp_box and bx then
-        local c=hue_or(ch,c_box,1)
-        local x0,y0,w0,h0=bx-2,by-2,bw+4,bh+4
-        if cfg.esp_boxstyle==1 then
-          if draw.CornerBox then draw.CornerBox(x0,y0,w0,h0,c) else draw.Rect(x0,y0,w0,h0,c,0,1) end
-        elseif cfg.esp_boxstyle==3 then
-          -- Picture: Lebron fills the box with his photo. the other two Picture
-          -- styles are plain boxes, so switching between them adds no extra
-          -- fill, band or inset over the target.
-          local ps=cfg.esp_picstyle or 1
-          local tex
-          if ps==1 then tex=king_image() elseif ps==2 then tex=chuck_image() elseif ps==3 then tex=pic_image() end
-          if tex then
-            -- the photo fills the box edge to edge, with no outline over it.
-            -- draw.Image tint channels are 0-255, unlike every other colour here.
-            -- Chroma tint the photo with the hue the box outline would take;
-            -- without chroma the tint stays white so the photo is untouched.
-            local pop=clamp(cfg.esp_pic_opacity or 100,10,100)/100
-            local al=math.floor(clamp(c[4],0,1)*pop*255+0.5)
-            local tr,tg,tb=255,255,255
-            if ch then
-              tr=math.floor(clamp(c[1],0,1)*255+0.5)
-              tg=math.floor(clamp(c[2],0,1)*255+0.5)
-              tb=math.floor(clamp(c[3],0,1)*255+0.5)
-            end
-            if al>0 then draw.Image(tex,x0,y0,w0,h0,tr,tg,tb,al) end
-          else
-            -- photo still downloading / failed to load: plain box for now
-            draw.Rect(x0,y0,w0,h0,c,0,1)
-          end
-        else draw.Rect(x0,y0,w0,h0,c,0,1) end
-      end
-      -- health bar hugs the box. a fixed gap is fine up close, but at range the
-      -- projected box is only a few pixels wide, so the same 8px reads as a bar
-      -- pinned way off to the left. the gap tracks the box width instead, held
-      -- inside a hard 1.5..5 px clamp so it never drifts off at either extreme.
-      -- vertical extent is the box itself (no inflation), matching the API
-      -- example, so the bar is exactly as tall as the target it belongs to.
-      if cfg.esp_hp and bx then
-        local hh,mh=0,100
-        local okh2,hv2=pcall(PF.hp,p); if okh2 and hv2 then hh=hv2 end
-        local okm2,mv2=pcall(PF.mhp,p); if okm2 and mv2 then mh=mv2 end
-        local gap=clamp(bw*0.12,1.5,5)
-        pcall(draw.HealthBar,bx-gap,by,bh,hh,mh)
-        -- the bar has no width parameter (a few px at most), so the number sits
-        -- to its left, right-aligned against it and centred on its height, with
-        -- the same red->green ramp the bar uses. only drawn when the bar itself
-        -- is on: the row is hidden with it, and this re-checks so a stale config
-        -- value cannot leave a number floating next to nothing.
-        if cfg.esp_hptext then
-          -- the bar draws its own border/shadow a couple of px past its x, so
-          -- the number keeps a fixed 10 px gutter from that edge instead of
-          -- sitting right against it
-          local fsz=math.max(8,tsz-3)
-          local frac=clamp(mh>0 and hh/mh or 0,0,1)
-          local ht=string.format("%d",math.floor(hh+0.5))
-          local tw2,th2=ts(ht,fsz)
-          local hc=HP_RAMP[math.floor(frac*20+0.5)]
-          draw.Text(math.max(1,bx-gap-10-tw2),by+(bh-th2)*0.5,ht,hue_or(ch,hc,1),fsz)
-        end
-      end
-      local name_y=by and (by-tsz-4) or (anchor_y and anchor_y-tsz-6)
-      if cfg.esp_hat and hat_v and (not name_y or hat_y<name_y) then name_y=hat_y-tsz-4 end
-      local cx = bx and (bx+bw*0.5) or anchor_x
-      if cfg.esp_name and pname and cx and name_y then
-        local tw=ts(pname,tsz); draw.Text(cx-tw*0.5,name_y,pname,hue_or(ch,c_name,1),tsz)
-      end
-      local stack_y=by and (by+bh+3) or (anchor_y and anchor_y+4)
-      if cfg.esp_dist and cx and stack_y then
-        local dl=string.format("%dm",math.floor(dist*PF.m)); local tw=ts(dl,tsz-2)
-        draw.Text(cx-tw*0.5,stack_y,dl,hue_or(ch,c_dist,0.9),tsz-2)
-        stack_y=stack_y+(tsz-2)+1
-      end
-      if cfg.esp_weapon and cx and stack_y and ptool and ptool~="" then
-        local tw=ts(ptool,tsz-2)
-        draw.Text(cx-tw*0.5,stack_y,ptool,hue_or(ch,c_weapon,0.9),tsz-2)
-      end
-      if cfg.esp_tracer then
-        local oy=(cfg.esp_tracer_from==1) and sh or ((cfg.esp_tracer_from==3) and 0 or sh*0.5)
-        local tx,ty
-        if bx then tx,ty=bx+bw*0.5,by+bh elseif anchor_x then tx,ty=anchor_x,anchor_y end
-        if tx then draw.Line(hw,oy,tx,ty,hue_or(ch,c_tr,1),1) end
-      end
-      if cfg.esp_skel and (bx or head_x) then
-        -- One GetBoneScreen call per bone returns scalars, so this whole pass
-        -- allocates nothing. It replaces GetBonesScreen, whose per-player
-        -- {bone -> {x,y}} dictionary was the GC churn behind the overlay
-        -- jitter once a lot of players were on screen.
-        local px,py,pok=PF.px,PF.py,PF.pok
-        local names=PF.bone_names
-        for i=1,#names do
-          local okp,vx,vy,vis=pcall(PF.bonescreen,p,names[i])
-          -- cull here: a bone outside the frame is dropped before any line is
-          -- built from it, so an off-screen rig costs no draws
-          if okp and vx and vy and vis~=false and vx>-8 and vy>-8 and vx<sw+8 and vy<sh+8 then
-            px[i],py[i],pok[i]=vx,vy,true
-          else
-            pok[i]=nil
-          end
-        end
-        local c=hue_or(ch,c_bone,0.9)
-        local links=PF.bone_links
-        for i=1,#links do
-          local a,b=links[i][1],links[i][2]
-          if pok[a] and pok[b] then draw.Line(px[a],py[a],px[b],py[b],c,1) end
-        end
-      end
-      -- head dot: a plain outlined circle centred on the Head bone, sized in
-      -- WORLD space like the china hat instead of a fixed pixel count. the
-      -- slider is a percentage of the hat's brim radius (0.62 studs), so at
-      -- 100% the dot is exactly the hat's footprint. the radius comes from
-      -- projecting a point one head-height above the head and halving the
-      -- on-screen delta, which means it shrinks with distance at exactly the
-      -- same rate as the player it belongs to - no blob left floating over a
-      -- dot-sized target. box height is the fallback when HeadPosition is null
-      -- or that probe point is off screen.
-      if cfg.esp_headdot and head_x then
-        local hs=(cfg.esp_headdot_size or 100)/100
-        local hr
-        if hp then
-          local _,hy2,hv2=draw.WorldToScreen(hp.X,hp.Y+1.24*hs,hp.Z)
-          if hv2 then hr=math.abs(hy2-head_y)*0.5 end
-        end
-        if not hr and bx then hr=bh*0.11*hs end
-        if hr and hr>0.4 then
-          local c=hue_or(ch,c_bone,1)
-          if hr<2.4 then
-            -- at this size a 1px outline is mostly its own black shadow pass:
-            -- the ring and the shadow rings overlap and the dot reads as a
-            -- black smudge on the head. a filled pip keeps the colour and
-            -- still marks the head at range.
-            draw.CircleFilled(head_x,head_y,math.max(hr,1.6),c,10)
-          else
-            draw.Circle(head_x,head_y,hr,c,math.max(10,math.floor(hr*3)),1)
-          end
-        end
-      end
-      if cfg.esp_hat and hp and hat_v then
-        -- wireframe cone around the head: brim ring in the XZ plane, ribs up to
-        -- the projected apex, so it sits on the head in world space
-        local hs=(cfg.esp_hat_size or 100)/100
-        local brimy=hp.Y+0.44*hs; local rad=0.62*hs
-        local xs,ys=PF.xs,PF.ys
-        local ring_ok=true
-        for i=0,15 do
-          local t=i/16*math.pi*2
-          local sx,sy,v=draw.WorldToScreen(hp.X+math.cos(t)*rad,brimy,hp.Z+math.sin(t)*rad)
-          if not v then ring_ok=false; break end
-          xs[i+1]=sx; ys[i+1]=sy
-        end
-        if ring_ok then
-          local c=hue_or(ch,c_hat,1)
-          -- projected brim radius, measured from the brim's own centre. below
-          -- ~3px the 16 rim segments and 8 ribs land on the same pixels, so the
-          -- black shadow pass of every line wins and the hat reads as a black
-          -- cap sitting on the head. swap the wireframe for one filled cone
-          -- silhouette there: same colour, no overlap, no black.
-          local bcx,bcy,bcv=draw.WorldToScreen(hp.X,brimy,hp.Z)
-          local pxr=0
-          if bcv then
-            for i=1,16 do
-              local dx,dy=xs[i]-bcx,ys[i]-bcy
-              pxr=pxr+math.sqrt(dx*dx+dy*dy)
-            end
-            pxr=pxr/16
-          end
-          if pxr>0 and pxr<3 then
-            if draw.PolyFilled then
-              draw.PolyFilled({{hat_x,hat_y},{xs[1],ys[1]},{xs[9],ys[9]}},c)
-            end
-          else
-            for i=1,16 do local j=i%16+1; draw.Line(xs[i],ys[i],xs[j],ys[j],c,1) end
-            for i=1,16,2 do draw.Line(hat_x,hat_y,xs[i],ys[i],c,1) end
-          end
-        end
-      end
-    end)
+    F.idx=idx
+    pcall(esp_player,p)
   end
 end
 
@@ -1150,34 +1354,49 @@ end
 -- limb hulls before rendering so the body reads as one silhouette with no
 -- seams. Filled is style 0, Outline is style 1.
 -- =========================================================================
+local function chams_one(p)
+  local F=ESP_S.c
+  if p==F.lp or p.IsLocal or p.IsAlive==false then return end
+  local pos=p.Position
+  if not pos then return end
+  local dx,dy,dz=pos.X-F.lx,pos.Y-F.ly,pos.Z-F.lz
+  local d2=dx*dx+dy*dy+dz*dz
+  if d2>F.md2 then return end
+  -- a body behind the eye is not on screen, so the hull pass is skipped
+  if F.dot then
+    local ax,ay,az
+    if F.cx then ax,ay,az=pos.X-F.cx,pos.Y-F.cy,pos.Z-F.cz
+    else ax,ay,az=dx,dy,dz end
+    if ax*F.fx+ay*F.fy+az*F.fz<=0 and (F.cx or d2>2500) then return end
+  end
+  if F.team and esp_mate(p,F.lp) then return end
+  -- opacity comes from the Chams swatch; chroma only replaces the hue
+  local ch=nil
+  if F.chroma then ch=PF.hue_fill(ESP_S.ch,(F.chue+F.idx*0.07)%1,0.8,1) end
+  draw.ChamsPlayer(p,hue_or(ch,F.c1,1),F.style)
+end
+
 local function run_chams()
   -- chams live under ESP -> Players, so Enable ESP is their master too. without
   -- this the bodies kept rendering after the ESP pass had already returned.
   if not (cfg.esp_on and cfg.chams_on) then return end
   if not draw.ChamsPlayer then return end
-  local lp; pcall(function() lp=entity.GetLocalPlayer() end)
-  local ok,players=pcall(entity.GetPlayers)
-  if not ok or type(players)~="table" then return end
-  local c1=col.c_chams or {1,0.22,0.34,1}
-  local chroma_on=cfg.esp_chroma; local chue=now()*0.12
-  local style=clamp((cfg.chams_mode or 1)-1,0,1)
-  -- chams share the Players Max Distance slider; 0 gates them off completely
-  -- and every value above it is a hard cap in metres
+  -- chams share the Player Range slider; 0 gates them off completely
   local md=(cfg.esp_maxdist or 1500)/PF.m
   if md<=0 then return end
-  local idx=0
-  for _,p in ipairs(players) do
-    idx=idx+1
-    pcall(function()
-      if p==lp or p.IsLocal or p.IsAlive==false then return end
-      if cfg.esp_team and esp_mate(p,lp) then return end
-      local dist=0
-      local okd,dv=pcall(PF.dist,p); if okd and dv then dist=dv end
-      if dist>md then return end
-      -- opacity comes from the Chams swatch; chroma only replaces the hue
-      local c=hue_or(chroma_on and hsv((chue+idx*0.07)%1,0.8,1) or nil,c1,1)
-      draw.ChamsPlayer(p,c,style)
-    end)
+  local F=ESP_S.c
+  if not esp_view(F) then return end
+  F.md2=md*md
+  F.team=cfg.esp_team
+  F.chroma=cfg.esp_chroma
+  F.chue=now()*0.12
+  F.style=clamp((cfg.chams_mode or 1)-1,0,1)
+  F.c1=col.c_chams or {1,0.22,0.34,1}
+  local ok,players=pcall(entity.GetPlayers)
+  if not ok or type(players)~="table" then return end
+  for idx,p in ipairs(players) do
+    F.idx=idx
+    pcall(chams_one,p)
   end
 end
 
@@ -1228,7 +1447,10 @@ local function run_radar()
         if cfg.esp_team and mate then return end
         local pos=p.Position
         if not pos then return end
-        local dx,dz=pos.X-cam.X,pos.Z-cam.Z
+        -- blip placement and the label below use the same origin (the local
+        -- player's root, camera only as a fallback), so third person or freecam
+        -- cannot slide the dots away from the distances printed next to them
+        local dx,dz=pos.X-ox,pos.Z-oz
         local dd=math.sqrt(dx*dx+dz*dz)
         if dd>rng then return end
         local px=cx+(dx*rtx+dz*rtz)*(rsz*0.5-8)/rng
@@ -1251,19 +1473,24 @@ local function run_radar()
             local ex=(lx*rtx+lz*rtz)/ll
             local ey=-(lx*fx+lz*fz)/ll
             local r0=mate and 2.2 or 3
-            draw.Line(px+ex*r0,py+ey*r0,px+ex*(r0+7),py+ey*(r0+7),{c[1],c[2],c[3],ca*0.85},1)
+            local tc=PF.rct
+            tc[1]=c[1]; tc[2]=c[2]; tc[3]=c[3]; tc[4]=ca*0.85
+            draw.Line(px+ex*r0,py+ey*r0,px+ex*(r0+7),py+ey*(r0+7),tc,1)
           end
         end
         rc[1]=c[1]; rc[2]=c[2]; rc[3]=c[3]; rc[4]=ca
         draw.CircleFilled(px,py,mate and 2.2 or 3,rc,10)
-        -- straight-line distance from the local player, in metres. the label
-        -- sits to the right of the blip and flips left when it would leave the
-        -- panel, so a target on the radar edge still gets a readable number.
+        -- straight-line distance from the local player, in the game's metres
+        -- (studs), so it matches the kill feed. the label sits to the right of
+        -- the blip and flips left when it would leave the panel, so a target on
+        -- the radar edge still gets a readable number.
         local ddx,ddz=pos.X-ox,pos.Z-oz
         local ddy=pos.Y-oy
-        local dm=math.floor(math.sqrt(ddx*ddx+ddy*ddy+ddz*ddz)*PF.m)
-        local txt=dm.."m"
-        local tw=ts(txt,9)
+        local dm=math.floor(math.sqrt(ddx*ddx+ddy*ddy+ddz*ddz))
+        local txt=PF.rdtxt[dm]
+        if not txt then txt=dm.."m"; PF.rdtxt[dm]=txt end
+        local tw=PF.rdw[dm]
+        if not tw then tw=ts(txt,9); PF.rdw[dm]=tw end
         -- 11px clears the facing tick (dot rim + 7px stub), so the number never
         -- sits on top of the direction line
         local tx2=px+11
@@ -1532,7 +1759,7 @@ end
 -- colours looked up live from the inline swatch chips.
 -- =========================================================================
 local W_CACHE={ loot={}, base={}, bags={}, dropped={}, nodes={}, picks={}, plants={}, veh={}, gen=0,
-  col={1,1,1,1}, def={1,1,1,1}, suf={} }
+  col={1,1,1,1}, def={1,1,1,1}, suf={}, tw={}, dl={}, low={} }
 -- World sweep state: the incremental folder walk plus the accumulators for the
 -- sweep in flight. Kept in one table so it costs a single module-level local.
 local W_SWEEP={tasks={},ti=1,ki=1,ch=nil,active=false,cool=0,
@@ -1572,6 +1799,12 @@ local W_BASE={
   {"locker","loot_locker","Locker","c_lootlocker"},
   {"sleepingbag","loot_bag","Sleeping Bag","c_lootbag"},
   {"sleeping_bag","loot_bag","Sleeping Bag","c_lootbag"},
+  -- Defences. Model names straight from the place dump (Defs / Deployables):
+  -- ShotgunTrap, AutoTurret and AATurret are all direct children of
+  -- Workspace.Deployables, so the base sweep already walks them.
+  {"shotguntrap","base_shotguntrap","Shotgun Trap","c_baseshotguntrap"},
+  {"autoturret","base_autoturret","Auto Turret","c_baseautoturret"},
+  {"aaturret","base_aaturret","AA Turret","c_baseaaturret"},
 }
 local W_NODE={
   {"stone","node_stone","Stone Node","c_nodestone"},
@@ -1773,12 +2006,32 @@ end
 -- part rides along too: static entries draw from the frozen point, moving ones
 -- (bags, dropped items) re-read it live so they glide instead of stepping once
 -- a second.
-local function w_push(list,inst,name,cid,fixed,extra)
+local function w_push(list,inst,name,cid,fixed,extra,slow)
   local key=W_SWEEP.key(inst)
   local p=w_part(inst,key,extra)
   if not p then return end
   local x,y,z=w_pos(inst,p,fixed,key)
-  if x then list[#list+1]={x=x,y=y,z=z,part=p,live=not fixed,name=name,cid=cid} end
+  if x then
+    -- slow = a mover that is static most of the time (bags, dropped items): the
+    -- render pass refreshes its live point every third frame instead of every
+    -- frame. That is invisible on a stationary item and cuts the host reads by
+    -- two thirds when the ground is covered in loot. ph spreads the refresh
+    -- across frames so only a third of them land on any one frame.
+    --
+    -- Entries come out of a per-list pool refilled at publish: allocating a fresh
+    -- table for every marker on every sweep was one of the per-sweep garbage
+    -- bursts behind the hitch that showed up every few seconds on a packed tab.
+    local pool=list.pool
+    local e
+    if pool and #pool>0 then e=pool[#pool]; pool[#pool]=nil end
+    if not e then e={} end
+    e.x=x; e.y=y; e.z=z; e.part=p
+    e.live=not fixed; e.slow=slow or nil
+    e.name=name; e.cid=cid; e.ph=#list%3
+    -- the distance label is rebuilt on the next draw, for this name/distance
+    e.dm=nil; e.dtxt=nil; e.dw=nil; e.dwsz=nil
+    list[#list+1]=e
+  end
 end
 -- ores first, plants in the middle, wood last: the same order the old resolver
 -- used, so a name still lands in exactly one of the two caches. the third
@@ -1890,7 +2143,7 @@ end
 function W_SWEEP.take(kind,inst)
   local nx=W_SWEEP.next
   if kind=="lootbase" then
-    local lower=(inst.Name or ""):lower()
+    local lower=W_CACHE.lower(inst.Name or "")
     local hit=false
     if cfg.loot_on then
       for k=1,#W_LOOT do
@@ -1916,13 +2169,13 @@ function W_SWEEP.take(kind,inst)
     -- belongs.
     if not hit and cfg.bags_on then
       local label=w_bag_label(lower)
-      if label then w_push(nx.bags,inst,label,"c_bodybag") end
+      if label then w_push(nx.bags,inst,label,"c_bodybag",nil,nil,true) end
     end
   elseif kind=="bags" then
-    local label=w_bag_label((inst.Name or ""):lower())
-    if label then w_push(nx.bags,inst,label,"c_bodybag") end
+    local label=w_bag_label(W_CACHE.lower(inst.Name or ""))
+    if label then w_push(nx.bags,inst,label,"c_bodybag",nil,nil,true) end
   elseif kind=="bags_top" then
-    local lower=(inst.Name or ""):lower()
+    local lower=W_CACHE.lower(inst.Name or "")
     if lower:find("corpse",1,true) or lower:find("bodybag",1,true)
       or lower:find("body_bag",1,true) or lower:find("deadbody",1,true)
       or lower:find("dead_body",1,true) or lower:find("ragdoll",1,true)
@@ -1930,17 +2183,17 @@ function W_SWEEP.take(kind,inst)
       or lower:find("loot_bag",1,true) or lower:find("deathbag",1,true) then
       if cfg.bags_on then
         local label=w_bag_label(lower)
-        if label then w_push(nx.bags,inst,label,"c_bodybag") end
+        if label then w_push(nx.bags,inst,label,"c_bodybag",nil,nil,true) end
       end
     elseif cfg.drop_on and inst.ClassName=="Tool" then
       -- Loose tool: a dropped gun/hatchet that stayed a Tool in Workspace.
-      w_push(nx.dropped,inst,inst.Name or "Item","c_dropped")
+      w_push(nx.dropped,inst,inst.Name or "Item","c_dropped",nil,nil,true)
     end
   elseif kind=="dropped" then
     local iname=inst.Name or "Item"
-    if not w_is_bag(iname:lower()) then w_push(nx.dropped,inst,iname,"c_dropped") end
+    if not w_is_bag(iname:lower()) then w_push(nx.dropped,inst,iname,"c_dropped",nil,nil,true) end
   elseif kind=="nodes" then
-    local lower=(inst.Name or ""):lower()
+    local lower=W_CACHE.lower(inst.Name or "")
     for k=1,#W_NODE do
       local rule=W_NODE[k]
       if lower:find(rule[1],1,true) then
@@ -1950,7 +2203,7 @@ function W_SWEEP.take(kind,inst)
     end
   elseif kind=="picks" then
     local iname=inst.Name or ""
-    local label,cid,pk=w_pick_label(iname:lower())
+    local label,cid,pk=w_pick_label(W_CACHE.lower(iname))
     if label then
       if pk=="plant" then w_push(nx.plants,inst,label,cid,true)
       else w_push(nx.picks,inst,label,cid,true) end
@@ -1959,7 +2212,7 @@ function W_SWEEP.take(kind,inst)
     -- Vehicles are pushed live (no fixed flag): they drive, so the render pass
     -- re-reads the part each frame instead of drawing a once-a-second snapshot
     -- that would step along behind them.
-    local lower=(inst.Name or ""):lower()
+    local lower=W_CACHE.lower(inst.Name or "")
     local rules=W_CACHE.vehrules
     for k=1,#rules do
       local rule=rules[k]
@@ -1974,10 +2227,33 @@ end
 -- swap the finished sweep in, then bound the caches
 function W_SWEEP.publish()
   local nx=W_SWEEP.next
+  -- Recycle the snapshot the renderer just finished with. Its entry tables go
+  -- back into a bounded per-list pool and its (now empty) list tables become the
+  -- next accumulators, so a publish no longer allocates one table per marker.
+  -- That per-sweep burst was the hitch every few seconds once the collector
+  -- caught up with it on a packed World tab.
+  local old={W_CACHE.loot,W_CACHE.base,W_CACHE.bags,W_CACHE.dropped,
+    W_CACHE.nodes,W_CACHE.picks,W_CACHE.plants,W_CACHE.veh}
+  for i=1,8 do
+    local ol=old[i]
+    local pool=ol.pool or {}
+    local pl=#pool
+    for j=1,#ol do
+      if pl>=192 then break end
+      local e=ol[j]
+      -- never keep an instance reference in the pool: a despawned part must not
+      -- be held alive by a recycled entry
+      e.part=nil; e.dtxt=nil; e.name=nil
+      pl=pl+1; pool[pl]=e
+    end
+    ol.pool=pool
+    for j=#ol,1,-1 do ol[j]=nil end
+  end
   W_CACHE.loot=nx.loot; W_CACHE.base=nx.base; W_CACHE.bags=nx.bags
   W_CACHE.dropped=nx.dropped; W_CACHE.nodes=nx.nodes
   W_CACHE.picks=nx.picks; W_CACHE.plants=nx.plants; W_CACHE.veh=nx.veh
-  W_SWEEP.next={loot={},base={},bags={},dropped={},nodes={},picks={},plants={},veh={}}
+  W_SWEEP.next={loot=old[1],base=old[2],bags=old[3],dropped=old[4],
+    nodes=old[5],picks=old[6],plants=old[7],veh=old[8]}
   W_SWEEP.active=false
   -- Cadence in frames, not seconds. now() reads utility.GetTime and falls back to
   -- os.clock(); GetTime is frame-granular on some builds and a frozen clock used
@@ -1988,12 +2264,46 @@ function W_SWEEP.publish()
   -- Anything not touched by the sweep that just finished is dropped. Address
   -- keys make this exact: one entry per live object, not one per wrapper per
   -- second, which is what used to bleed FPS over a long session.
-  for k,v in pairs(W_PART_CACHE) do if v.gen~=W_CACHE.gen then W_PART_CACHE[k]=nil end end
-  for k,v in pairs(W_FIX) do if v.gen~=W_CACHE.gen then W_FIX[k]=nil end end
+  --
+  -- The walk itself is handed to step, which clears a slice per idle frame: a
+  -- single pass over every cached part was an O(cache) burst on each publish,
+  -- and on a packed map that was another source of the every-few-seconds hitch.
+  local pq=W_SWEEP.pq
+  if pq then
+    for i=1,2 do pq[i].k=nil; pq[i].done=false end
+  end
+end
+
+-- Bounded cache prune, one slice per idle frame. Only runs between sweeps, when
+-- W_CACHE.gen is stable: pruning mid-walk would judge entries the sweep has not
+-- reached yet against the new generation and throw away their cached part.
+function W_SWEEP.prune()
+  local pq=W_SWEEP.pq
+  if not pq then
+    pq={{t=W_PART_CACHE,k=nil,done=true},{t=W_FIX,k=nil,done=true}}
+    W_SWEEP.pq=pq
+  end
+  for i=1,2 do
+    local q=pq[i]
+    if not q.done then
+      local t=q.t
+      local k=q.k
+      local n=256
+      while n>0 do
+        local nk,v=next(t,k)
+        if nk==nil then q.done=true; k=nil; break end
+        k=nk; n=n-1
+        if type(v)=="table" and v.gen~=W_CACHE.gen then t[k]=nil end
+      end
+      q.k=k
+    end
+  end
 end
 
 -- step the walk; called once per frame from run_world
 function W_SWEEP.step()
+  -- between sweeps the generation is stable, so the deferred cache prune can run
+  if not W_SWEEP.active then W_SWEEP.prune() end
   if not W_SWEEP.active then
     -- same one-second cadence the old single-frame refresh had: the total work
     -- per second is unchanged, it is just spread over the frames in between
@@ -2008,9 +2318,16 @@ function W_SWEEP.step()
     local task=W_SWEEP.tasks[W_SWEEP.ti]
     if not task then break end
     if W_SWEEP.ch==nil then
-      W_SWEEP.ch=task.folder and w_children(task.folder) or false
-      if not W_SWEEP.ch then
+      -- One folder enumeration per frame. GetChildren() on a packed folder builds
+      -- one wrapper per child in a single host call, so asking for several big
+      -- folders on the same frame was a visible stall every sweep.
+      local ch=task.folder and w_children(task.folder) or false
+      if ch then
+        W_SWEEP.ch=ch
+        budget=0
+      else
         W_SWEEP.ch=nil; W_SWEEP.ti=W_SWEEP.ti+1; W_SWEEP.ki=1
+        budget=budget-1
       end
     else
       local ch=W_SWEEP.ch
@@ -2028,9 +2345,11 @@ function W_SWEEP.step()
   end
   if not W_SWEEP.tasks[W_SWEEP.ti] then W_SWEEP.publish() end
 end
--- one renderer for all five passes. 0 means "off", the slider's top value means
--- unlimited, and the readout shows metres exactly like the player ESP. The range
--- row is metres while the scan is studs, so the limit is converted once here.
+-- one renderer for all five passes. 0 means "off", every other value is a hard
+-- cap in real metres, and the readout shows the game's metres (studs) exactly
+-- like the player ESP. The range row is real metres while the scan is studs, so
+-- the limit is converted once here through PF.m - the same number the slider and
+-- the readout use.
 --
 -- Width of the " [NNNm]" distance suffix, measured from its parts once per font
 -- size. Measuring the whole label again on every metre the camera moves was the
@@ -2044,73 +2363,138 @@ function W_CACHE.sufw(fs,nd)
   end
   return t.ow+t.dw*nd+t.cw
 end
+-- Width of an item name, shared by every marker that carries it. The same
+-- handful of names repeat across hundreds of entries, so measuring per entry was
+-- hundreds of GetTextSize host calls a second for nothing.
+function W_CACHE.namew(name,fs)
+  local t=W_CACHE.tw[name]
+  if not t then t={}; W_CACHE.tw[name]=t end
+  local w=t[fs]
+  if not w then w=ts(name,fs); t[fs]=w end
+  return w
+end
+-- Full "Name [123m]" label, memoised per name and whole metre. Building that
+-- string per marker per metre was steady garbage while moving, and the
+-- collector catching up with it is exactly the kind of hitch that shows up
+-- every few seconds on a busy tab. Each name keeps a small bounded set of
+-- distances; past that the table is cleared rather than grown forever.
+function W_CACHE.label(name,dm)
+  local t=W_CACHE.dl[name]
+  if not t then t={}; W_CACHE.dl[name]=t end
+  local s=t[dm]
+  if s then return s end
+  s=name.." ["..dm.."m]"
+  local n=t.n or 0
+  if n>=64 then
+    for k in pairs(t) do t[k]=nil end
+    n=0
+  end
+  t.n=n+1
+  t[dm]=s
+  return s
+end
+-- Lowercased instance name, memoised by the name itself. The sweep lowercased
+-- every child on every pass, which is a fresh string per item per sweep; item
+-- names repeat by the hundred, so one entry per distinct type removes almost all
+-- of that garbage.
+function W_CACHE.lower(nm)
+  local s=W_CACHE.low[nm]
+  if not s then s=nm:lower(); W_CACHE.low[nm]=s end
+  return s
+end
 local function ndig(n)
   if n<10 then return 1 elseif n<100 then return 2 elseif n<1000 then return 3 end
   return 4
 end
-local function w_render(list,camx,camy,camz,limit,show_dist,fs)
-  if #list==0 or limit<=0 then return end
-  local lim=limit>=3000 and math.huge or limit/PF.m
+local function w_render(list,camx,camy,camz,limit,show_dist,fs,fx,fy,fz,cap)
+  local n=#list
+  if n==0 or limit<=0 or cap<=0 then return end
+  local lim=limit/PF.m
   local lim2=lim*lim
   local drawn=0
-  for i=1,#list do
-    if drawn>=120 then break end
+  -- label origin: the body when run_world could read it, else the eye
+  local ox,oy,oz=W_CACHE.ox,W_CACHE.oy,W_CACHE.oz
+  if not ox then ox,oy,oz=camx,camy,camz end
+  local fr=W_CACHE.fr
+  local wc=W_CACHE.col
+  local def=W_CACHE.def
+  for i=1,n do
+    if drawn>=cap then break end
     local e=list[i]
     -- Range test first, from the point the sweep recorded. Only entries that are
-    -- actually going to be drawn pay for the live position re-read below: doing
-    -- it up front meant one host call per dropped item per frame, in range or
-    -- not, and dropped items are the most numerous thing on this tab.
+    -- actually going to be drawn pay for the live position re-read below.
     local ex,ey,ez=e.x,e.y,e.z
     local dx,dy,dz=ex-camx,ey-camy,ez-camz
     local d2=dx*dx+dy*dy+dz*dz
-    if d2<=lim2 and e.live and e.part then
-      -- Moving entries (bags, dropped items) re-read their part every frame. The
-      -- sweep only refreshes them once per pass, so drawing the scanned point
-      -- made them step between sweeps. Static entries keep their frozen point
-      -- and pay nothing extra.
-      local okp,pv=pcall(PF.pos,e.part)
-      if okp and pv then
-        local lx=pv.X or pv.x
-        if lx then
-          ex=lx; ey=pv.Y or pv.y; ez=pv.Z or pv.z
-          dx,dy,dz=ex-camx,ey-camy,ez-camz
-          d2=dx*dx+dy*dy+dz*dz
-        end
-      end
-    end
     if d2<=lim2 then
-      local sx,sy,vis=draw.WorldToScreen(ex,ey,ez)
-      if vis then
-        drawn=drawn+1
-        local c=(e.cid and col[e.cid]) or W_CACHE.def
-        -- one shared scratch colour, refilled in place: two throwaway tables per
-        -- drawn item per frame was the whole GC load of the world pass
-        local wc=W_CACHE.col
-        wc[1]=c[1]; wc[2]=c[2]; wc[3]=c[3]; wc[4]=c[4] or 1
-        -- small pip: the label carries the readout, the dot only marks the spot.
-        -- a 2px quad instead of an 8-segment circle: at this size they look the
-        -- same and the quad is a fraction of the draw cost
-        draw.RectFilled(sx-1,sy-1,2,2,wc,0)
-        local txt=e.name
-        local tw
-        if show_dist then
-          -- label cached per whole metre: the string changes when the target
-          -- moves a metre, and its width is name + measured suffix, so no host
-          -- text measurement is needed per frame
-          local dm=math.floor(math.sqrt(d2)*PF.m)
-          if e.dm~=dm or not e.dtxt or e.dwsz~=fs then
-            e.dm=dm
-            e.dtxt=e.name.." ["..dm.."m]"
-            if not e.pw or e.pwsz~=fs then e.pw=ts(e.name,fs); e.pwsz=fs end
-            e.dw=e.pw+W_CACHE.sufw(fs,ndig(dm))
-            e.dwsz=fs
+      -- Behind the eye nothing projects, so the dot product drops the entry
+      -- before the live read and the projection. On a packed World tab that
+      -- removes roughly half of both.
+      if not fx or dx*fx+dy*fy+dz*fz>0 then
+        -- Bags and dropped items are static until something moves them, so their
+        -- live point refreshes every third frame (a 20 Hz glide at 60 fps) and
+        -- the read cost drops by two thirds. Vehicles still read every frame.
+        if e.live and e.part and (not e.slow or (fr+e.ph)%3==0) then
+          local okp,pv=pcall(PF.pos,e.part)
+          if okp and pv then
+            local lx=pv.X or pv.x
+            if lx then
+              ex=lx; ey=pv.Y or pv.y; ez=pv.Z or pv.z
+              -- remember it: the next two frames reuse this point instead of
+              -- falling back to the stale sweep coordinate, so a throttled item
+              -- still glides smoothly instead of snapping back every third frame
+              e.x,e.y,e.z=ex,ey,ez
+              dx,dy,dz=ex-camx,ey-camy,ez-camz
+              d2=dx*dx+dy*dy+dz*dz
+            end
           end
-          txt=e.dtxt; tw=e.dw
-        else
-          if not e.pw or e.pwsz~=fs then e.pw=ts(e.name,fs); e.pwsz=fs end
-          tw=e.pw
         end
-        draw.Text(sx-tw*0.5,sy-fs-3,txt,wc,fs)
+        if d2<=lim2 then
+          local sx,sy,vis=draw.WorldToScreen(ex,ey,ez)
+          -- WorldToScreen's flag only says the point is in front of the eye: a
+          -- marker well past the edge of the screen still comes back with usable
+          -- coordinates. Drawing those cost a text run plus its 4-direction
+          -- shadow for something no pixel ever showed, and whipping the camera
+          -- swings hundreds of markers past the edge on the same frame. That is
+          -- the spike that read as a jerk while moving the mouse fast. The wide
+          -- margin lets a centred label that is still partly on screen through
+          -- without having to measure it first.
+          local sw,sh=W_CACHE.sw,W_CACHE.sh
+          if vis and (not sw or (sx>-620 and sx<sw+620 and sy>-90 and sy<sh+90)) then
+            local txt=e.name
+            local tw
+            if show_dist then
+              -- label cached per whole game metre (a stud), measured once: the
+              -- string and its width only change when the target crosses a metre
+              -- of distance from the body, so a third-person camera swing no
+              -- longer rewrites every label on screen
+              local adx,ady,adz=ex-ox,ey-oy,ez-oz
+              local dm=math.floor(math.sqrt(adx*adx+ady*ady+adz*adz))
+              if e.dm~=dm or not e.dtxt or e.dwsz~=fs then
+                e.dm=dm
+                e.dtxt=W_CACHE.label(e.name,dm)
+                e.dw=W_CACHE.namew(e.name,fs)+W_CACHE.sufw(fs,ndig(dm))
+                e.dwsz=fs
+              end
+              txt=e.dtxt; tw=e.dw
+            else
+              tw=W_CACHE.namew(e.name,fs)
+            end
+            -- exact test now that the label width is known, so a marker whose
+            -- body is off screen but whose label still overlaps the edge keeps
+            -- drawing exactly as it did before
+            if not sw or (sx+tw*0.5>-4 and sx-tw*0.5<sw+4
+              and sy>-fs-6 and sy<sh+6) then
+              drawn=drawn+1
+              local c=(e.cid and col[e.cid]) or def
+              -- one shared scratch colour, refilled in place
+              wc[1]=c[1]; wc[2]=c[2]; wc[3]=c[3]; wc[4]=c[4] or 1
+              -- small pip: the label carries the readout, the dot marks the spot
+              draw.RectFilled(sx-1,sy-1,2,2,wc,0)
+              draw.Text(sx-tw*0.5,sy-fs-3,txt,wc,fs)
+            end
+          end
+        end
       end
     end
   end
@@ -2124,44 +2508,76 @@ local function run_world()
   local cp; pcall(function() cp=camera.GetPosition() end)
   if not cp then return end
   local camx,camy,camz=cp.X,cp.Y,cp.Z
+  -- Label origin. Distances read out from the character, not from the eye: in
+  -- third person the eye orbits several studs around the body, so every swing of
+  -- the mouse changed the metre reading of every marker on screen and rebuilt
+  -- its label string. That churn is what made the collector hitch hardest when
+  -- the mouse moved fast. The radar and the player ESP already measure from the
+  -- body, so this also makes the three readouts agree.
+  local ox,oy,oz=camx,camy,camz
+  pcall(function()
+    local lp=entity.GetLocalPlayer()
+    local pp=lp and lp.Position
+    if pp then ox,oy,oz=pp.X,pp.Y,pp.Z end
+  end)
+  W_CACHE.ox=ox; W_CACHE.oy=oy; W_CACHE.oz=oz
+  W_CACHE.fr=(W_CACHE.fr or 0)+1
+  local fx,fy,fz
+  local lv; pcall(function() lv=camera.GetLookVector() end)
+  if lv then
+    fx,fy,fz=lv.X or 0,lv.Y or 0,lv.Z or 0
+    if fx*fx+fy*fy+fz*fz<1e-9 then fx=nil end
+  end
+  -- Worst-case draw guard. It only bites in a pathological frame (a mega-base
+  -- with hundreds of markers inside the range in every category at once), and it
+  -- is fixed for the frame so markers cannot flicker between frames. Normal
+  -- play stays well under it, and the range cull does the real work.
+  local nl=(cfg.loot_on and 1 or 0)+(cfg.base_on and 1 or 0)+(cfg.bags_on and 1 or 0)
+    +(cfg.drop_on and 1 or 0)+(cfg.nodes_on and 1 or 0)+(cfg.pick_on and 1 or 0)
+    +(cfg.plants_on and 1 or 0)+(cfg.veh_on and 1 or 0)
+  local cap=math.min(220,math.max(80,math.floor(1200/nl)))
+  -- screen bounds for the marker cull inside w_render. Kept here so the render
+  -- loop stays a leaf function and does not ask the host for the size per list.
+  local sw,sh=scr()
+  W_CACHE.sw=sw; W_CACHE.sh=sh
   -- containers and base deployables are scanned together but drawn apart, so a
   -- base range and a crate range never override each other
   if cfg.loot_on then
-    w_render(W_CACHE.loot,camx,camy,camz,cfg.loot_range or 170,
-      cfg.loot_dist,cfg.loot_text or 12)
+    w_render(W_CACHE.loot,camx,camy,camz,cfg.loot_range or 400*M_PER_STUD,
+      cfg.loot_dist,cfg.loot_text or 12,fx,fy,fz,cap)
   end
   if cfg.base_on then
-    w_render(W_CACHE.base,camx,camy,camz,cfg.base_range or 60,
-      cfg.base_dist,cfg.base_text or 12)
+    w_render(W_CACHE.base,camx,camy,camz,cfg.base_range or 175*M_PER_STUD,
+      cfg.base_dist,cfg.base_text or 12,fx,fy,fz,cap)
   end
   -- bags and dropped items share one range, distance toggle and text size
   if cfg.bags_on then
-    w_render(W_CACHE.bags,camx,camy,camz,cfg.bd_range or 170,
-      cfg.bd_dist,cfg.bd_text or 12)
+    w_render(W_CACHE.bags,camx,camy,camz,cfg.bd_range or 400*M_PER_STUD,
+      cfg.bd_dist,cfg.bd_text or 12,fx,fy,fz,cap)
   end
   if cfg.drop_on then
-    w_render(W_CACHE.dropped,camx,camy,camz,cfg.bd_range or 170,
-      cfg.bd_dist,cfg.bd_text or 12)
+    w_render(W_CACHE.dropped,camx,camy,camz,cfg.bd_range or 400*M_PER_STUD,
+      cfg.bd_dist,cfg.bd_text or 12,fx,fy,fz,cap)
   end
   if cfg.nodes_on then
     w_render(W_CACHE.nodes,camx,camy,camz,cfg.nodes_range or 120,
-      cfg.nodes_dist,cfg.nodes_text or 13)
+      cfg.nodes_dist,cfg.nodes_text or 13,fx,fy,fz,cap)
   end
   if cfg.pick_on then
-    w_render(W_CACHE.picks,camx,camy,camz,cfg.pick_range or 60,
-      cfg.pick_dist,cfg.pick_text or 12)
+    w_render(W_CACHE.picks,camx,camy,camz,cfg.pick_range or 150*M_PER_STUD,
+      cfg.pick_dist,cfg.pick_text or 12,fx,fy,fz,cap)
   end
   -- plants and food carry their own range, text size and distance toggle, so the
   -- pickup readout and the harvest readout can be switched independently
   if cfg.plants_on then
-    w_render(W_CACHE.plants,camx,camy,camz,cfg.plants_range or 60,
-      cfg.plants_dist,cfg.plants_text or 12)
+    w_render(W_CACHE.plants,camx,camy,camz,cfg.plants_range or 200*M_PER_STUD,
+      cfg.plants_dist,cfg.plants_text or 12,fx,fy,fz,cap)
   end
-  -- vehicles: own master toggle, own 400 m range row and own text size, so the
+  -- vehicles: own master toggle, own range row and own text size, so the
   -- readout can be dialled independently of the loot pass
   if cfg.veh_on then
-    w_render(W_CACHE.veh,camx,camy,camz,cfg.veh_range or 400,
-      cfg.veh_dist,cfg.veh_text or 12)
+    w_render(W_CACHE.veh,camx,camy,camz,cfg.veh_range or 1000*M_PER_STUD,
+      cfg.veh_dist,cfg.veh_text or 12,fx,fy,fz,cap)
   end
 end
 
@@ -2173,9 +2589,7 @@ end
 -- ESP pass would draw that frame's markers against the previous camera.
 -- =========================================================================
 local aim_tgt=nil   -- head point the FOV currently holds
-local aim_pt=nil    -- smoothed point fed to camera.LookAt
-local aim_dz_hold=false -- camera parked inside the deadzone; resume past the margin
--- mouse aim, same model as op1: a straight 1/sm divisor on the screen-space
+-- mouse aim: a straight 1/sm divisor on the screen-space
 -- error (sm=1 is a hard snap), the deadzone latches until the head is well
 -- clear, and the sub-pixel remainder is carried between frames.
 local aim_dz_state=0
@@ -2221,30 +2635,6 @@ local function aim_center()
   end
   return cx,cy
 end
--- the silent hook is one global switch, so drive it from the selected type and
--- the master toggle instead of from the key: an externally cleared hook would
--- otherwise leave SetSilentTarget posting into nothing.
-local function aim_hook_sync(want)
-  if not (raycast and raycast.EnableSilentHook) then return false end
-  local on=false
-  if raycast.IsSilentHookActive then pcall(function() on=raycast.IsSilentHookActive() end) end
-  if want then
-    if not on then pcall(raycast.EnableSilentHook) end
-    return true
-  end
-  if on then
-    if raycast.ClearSilentTarget then pcall(raycast.ClearSilentTarget) end
-    if raycast.StopSilentTracking then pcall(raycast.StopSilentTracking) end
-    pcall(raycast.DisableSilentHook)
-  end
-  return false
-end
-local function aim_vec(x,y,z)
-  local ctor=Vector3 and (Vector3.New or Vector3.new)
-  if not ctor then return nil end
-  local ok,v=pcall(ctor,x,y,z)
-  if ok then return v end
-end
 -- the shape you pick is also the hit region, not just a decoration: a wide
 -- corner box should not lock onto something outside its brackets.
 local function aim_in_fov(dx,dy,r,style)
@@ -2253,9 +2643,6 @@ local function aim_in_fov(dx,dy,r,style)
   if style==3 then return math.abs(dx)+math.abs(dy)<=r end
   return dx*dx+dy*dy<=r*r
 end
-local cam_tracking=false
-local cam_track_obj=nil
-local cam_track_part=nil
 
 local trig_next=0
 local trig_hold=nil
@@ -2266,33 +2653,47 @@ local TRIG_GRACE=0.25
 
 local AIM_BONES={"Head","Torso","HumanoidRootPart","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm","LeftHand","RightHand","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot","UpperTorso","LowerTorso"}
 
--- Muzzle velocity in studs per second, matched against the held tool's name.
--- The names come from the game dump (Bolt Action Rifle, SCAR, Custom SMG,
--- Tactical SMG, Semi-Automatic Rifle, Revolver, Double Barrel Shotgun, Hunting
--- Bow) plus the ones the recoil table already recognises. Speeds are the usual
--- Rust-ish muzzle velocities converted at 1 stud = 0.28m. First match wins, so
--- the specific names have to sit above the generic ones (Custom SMG before SMG,
--- Hunting Bow before Bow). Lives on PF so it costs no extra main-local.
+-- Muzzle velocity and bullet drop, straight out of the game dump
+-- (Items.Defs plus the GUN_BALANCE live table and the PROJ defaults). Every
+-- value is in studs: speed is studs per second, gravity is studs per second
+-- squared. 1 stud is 0.28 m, so the LR Sniper's 2600 studs/s is 728 m/s and a
+-- full-draw arrow at 220 studs/s is 61 m/s, both matching how the weapons feel
+-- in game. Guns carry their own fall rate: 8 for an ordinary bullet, 15 for
+-- shotgun pellets, 30 for the Bolt Action and 24 for the LR Sniper (the live
+-- balance table raises those two above the default so long shots really drop).
+-- First match wins, so the specific names sit above the generic ones (Custom
+-- SMG before SMG, Semi-Automatic Rifle before Rifle). Lives on PF so it costs
+-- no extra main-local.
 PF.guns={
-  {"bolt action",2140}, {"l96",2500}, {"sniper",2300},
-  {"hunting bow",360}, {"crossbow",600},
-  {"double barrel",700}, {"shotgun",700},
-  {"lr-300",1790}, {"lr300",1790}, {"m39",1430},
-  {"assault rifle",1340}, {"ak",1340}, {"scar",1610}, {"hmar",1430},
-  {"semi-automatic",1430}, {"semi automatic",1430}, {"sar",1430},
-  {"tactical smg",1430}, {"thompson",1430}, {"mp5",1430}, {"p90",1430},
-  {"custom smg",1250}, {"smg",1300},
-  {"revolver",1070}, {"python",1070}, {"pistol",1070},
-  {"bow",360},
+  {"lr sniper",2600,24}, {"bolt action",2200,30}, {"l96",2600,24},
+  {"semi-automatic rifle",1425,8}, {"semi auto rifle",1425,8},
+  {"assault rifle",1350,8}, {"scar",1450,8}, {"m249",1400,8},
+  {"drum smg",880,8}, {"tactical smg",950,8},
+  {"custom smg",900,8}, {"dino hunt smg",900,8}, {"hunt smg",900,8},
+  {"lever carbine",1250,8},
+  {"double barrel",520,15}, {"pump shotgun",560,15}, {"pipe shotgun",560,15},
+  {"revolver",950,8}, {"service pistol",950,8},
+  {"semi-auto pistol",900,8}, {"semi auto pistol",900,8},
+  -- generic fallbacks, tried only after every exact name above
+  {"shotgun",560,15}, {"smg",900,8}, {"sniper",2600,24},
+  {"carbine",1250,8}, {"machine gun",1400,8}, {"rifle",1425,8}, {"pistol",900,8},
 }
 
--- Arrow arc trim for Bow Drop. The workspace gravity is the engine's free-fall
--- rate, which overstates how much an arrow actually falls; scaling the drop by
--- this keeps the aim point a few studs over the head instead of metres over it.
--- Higher = more holdover. Tuned so a 40 m shot lands on the head rather than
--- short; the drop grows with distance squared, so the far end of the 100 m range
--- gets a lot of lift by design. Lives on PF so it costs no extra main-local.
-PF.bowarc=0.72
+-- Bow speed is not a constant: the game builds it from a base plus the draw
+-- charge, exactly like BOW_BALANCE does. Entries are
+-- {name, speedBase, speedCharge, gravity}. The Hunting Bow tops out at 95+125,
+-- the Compound Bow at 120+170, and the Crossbow is always loaded so its 320
+-- studs/s never scales. Gravity is 50, 40 and 28 studs/s^2, not the engine's
+-- 196.2, which is why the old arc fudge factor was so far off. The aim point
+-- always assumes a full draw: scaling by the live charge made a half-drawn
+-- arrow's drop balloon and yanked the view up right after the shot.
+-- Lives on PF so it costs no extra main-local.
+PF.bows={
+  {"crossbow",320,0,28},
+  {"compound",120,170,40},
+  {"hunting",95,125,50},
+  {"bow",95,125,50},
+}
 
 -- Bone lists per menu entry, resolved once instead of rebuilt per player per
 -- frame. Aimbot indexes 1..8, triggerbot 1..6 (both fall back to the full set).
@@ -2420,7 +2821,7 @@ end
 -- spreadMult, adsTime, s2Damage, rounds, adsSpread, moveSpread, damageMult,
 -- mag, reload, recoilRecover, recoilPitch, recoilYaw, notch, sightHeight.
 -- So this is a weapon-STAT mod only - vertical camera recoil is not reachable
--- through setgc, which is why the RCS above works on the mouse instead.
+-- through setgc, so it cannot be suppressed at all.
 --
 -- Patching is GLOBAL, not per weapon: rate = 0.09 turns the 1.8 s LR Sniper
 -- into a 20x-fire-rate rifle, the most detectable case there is. The slider is
@@ -2436,7 +2837,7 @@ end
 --
 -- Turning the master toggle off cannot restore stock values, because setgc has
 -- no read-back and the stock rate differs per weapon. Re-equip or rejoin.
-PF.sgc={state=nil,pending=nil,hold=0,force=0,warmed=false,tables=0,keys=0}
+PF.sgc={state=nil,pending=nil,hold=0,force=0,warmed=false}
 
 -- Resolve the GC API. In the dumper setgc is a bare global, but this script can
 -- be loaded into an environment where it only lives on _G or on the executor's
@@ -2528,83 +2929,10 @@ local function setgc_apply()
   -- One call, one GC walk. setgc({...}) is the exact form the dumper printed
   -- as its WORKING block, and it patches every key in a single pass instead of
   -- one full walk per key. Per-key is kept as a fallback only.
-  local tables,keys=0,0
   local ok,n=pcall(f,patch)
-  if ok and type(n)=="number" and n>0 then
-    tables=n
-    keys=#list
-  else
-    for i=1,#list do
-      local ok2,n2=pcall(f,list[i][1],list[i][2])
-      if ok2 and type(n2)=="number" then
-        tables=tables+n2
-        if n2>0 then keys=keys+1 end
-      end
-    end
+  if not (ok and type(n)=="number" and n>0) then
+    for i=1,#list do pcall(f,list[i][1],list[i][2]) end
   end
-  st.tables,st.keys=tables,keys
-end
-
-local function do_click_mouse1()
-  if utility and utility.MouseClick then
-    pcall(utility.MouseClick,"left"); return
-  end
-  if mouse1click then local ok=pcall(mouse1click); if ok then return end end
-  if mouse1press and mouse1release then pcall(function() mouse1press(); mouse1release() end); return end
-  if input and input.mouse_click then pcall(input.mouse_click,1); return end
-end
-
-local function get_model_position_part_h(inst)
-  if not inst then return nil end
-  if type(inst)=="userdata" and inst.ClassName then
-    if inst.ClassName=="Part" or inst.ClassName=="MeshPart" or inst.ClassName=="UnionOperation" or inst.ClassName=="BasePart" then return inst end
-  elseif type(inst)=="table" then
-    if inst.ClassName=="Part" or inst.ClassName=="MeshPart" then return inst end
-  end
-  if inst.PrimaryPart then return inst.PrimaryPart end
-  if inst.FindFirstChild then
-    for _,n in ipairs({"HumanoidRootPart","UpperTorso","Torso","Head","RootPart","Body"}) do
-      local p=nil; pcall(function() p=inst:FindFirstChild(n) end)
-      if p and ( (type(p)=="userdata" and p.Position) or type(p)=="table") then return p end
-    end
-  end
-  if inst.GetChildren then
-    local ch=inst:GetChildren()
-    for i=1,#ch do
-      local c=ch[i]
-      if type(c)=="userdata" and c.ClassName then
-        if c.ClassName=="Part" or c.ClassName=="MeshPart" or c.ClassName=="UnionOperation" or c.ClassName=="BasePart" then return c end
-      end
-    end
-  end
-  return nil
-end
-
-local function safe_pos_h(part)
-  if not part then return nil end
-  local pos=nil; pcall(function() pos=part.Position end)
-  if not pos then return nil end
-  local x=pos.X or pos.x; local y=pos.Y or pos.y; local z=pos.Z or pos.z
-  if not x then return nil end
-  return x,y,z
-end
-
-local SKELETON_BONES_NPC={{"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
-  {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
-  {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
-  {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
-  {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
-  {"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},
-}
-
-local function get_part_pos(p)
-  if not p then return nil end
-  local pos=nil
-  pcall(function() pos=p.Position end)
-  if not pos then return nil end
-  local x=pos.X or pos.x; local y=pos.Y or pos.y; local z=pos.Z or pos.z
-  if x and y and z then return x,y,z end
-  return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -2795,14 +3123,13 @@ local NPC_COL={
   ch={1,1,1,1},
   hp_bg={0.1,0.1,0.1,0.8},
   hp={},
-  -- studs per metre, and its square. The distance row prints metres
-  -- (studs * m) and the Max Distance slider is metres too, so the squared range
-  -- culls have to divide by m2. Comparing raw studs against the metre slider
-  -- was why a target reading "200m" vanished at a 400 limit (200m ~ 714 studs).
-  -- hub converts the same way: (range / 0.28)^2.
+  -- real metres per stud, and its square. A range row is stored in real metres
+  -- and the cull compares squared studs, so the squared range has to divide by
+  -- m2 (a 400 m limit is 1429 studs). The distance row itself prints studs - the
+  -- game's own metres - so the number beside an NPC matches the kill feed.
   m=PF.m,
   m2=PF.m*PF.m,
-  -- The patrol heli is exempt from the Max Distance slider: it flies, so a fixed
+  -- The patrol heli is exempt from the NPC Range slider: it flies, so a fixed
   -- ceiling keeps it on screen whatever the slider is set to. 1000m, converted
   -- to studs the same way the slider is.
   heli=1000/PF.m,
@@ -3011,7 +3338,6 @@ local function scan_npcs_task()
       npc_kids_t=-1
       npc_sweep_active=false
       cache_npcs=NPC_LIST
-      cached_npcs=NPC_LIST
     end
     return
   end
@@ -3093,10 +3419,10 @@ local function scan_npcs_task()
   local nkids=#NPC_KIDS
   if npc_kid_idx<nkids then
     local ox0,oy0,oz0=npc_origin()
-    local maxd0=cfg.npcs_max_dist or 400
-    if maxd0<1 then maxd0=400 end
-    -- the slider stops at 400; clamp in case a saved config predates the cap
-    if maxd0>400 then maxd0=400 end
+    local maxd0=cfg.npcs_max_dist or 300*M_PER_STUD
+    if maxd0<1 then maxd0=300*M_PER_STUD end
+    -- the row stops at 300 game metres; clamp in case a saved config predates it
+    if maxd0>300*M_PER_STUD then maxd0=300*M_PER_STUD end
     -- slider is metres; cull is studs, so convert before squaring
     local maxsq0=(maxd0*maxd0/NPC_COL.m2)*1.44
     local nextl=NPC_NEXT
@@ -3200,7 +3526,6 @@ local function scan_npcs_task()
     -- every rig that survives is already held in NPC_LIVE, so nothing is lost.
     for k in pairs(NPC_ROOT_CACHE) do NPC_ROOT_CACHE[k]=nil end
     cache_npcs=NPC_LIST
-    cached_npcs=NPC_LIST
   end
 end
 
@@ -3237,62 +3562,66 @@ end
 -- bone. It lives on PF rather than in a new main-level local so the chunk stays
 -- inside its 200-local budget. Returns the projected apex y when the cone was
 -- drawn, so the caller can lift the name row above it.
-PF.npc_hat=function(n,hs,c)
-  local arr=n.bones
-  if not arr then
-    arr=npc_bone_array(n.inst or n.obj)
-    n.bones=arr
-  end
-  local hx,hy,hz=bone_xyz(arr and arr[1])
-  if not hx then return nil end
-  local ax,ay,av=draw.WorldToScreen(hx,hy+1.16*hs,hz)
-  if not av then return nil end
-  local brimy=hy+0.44*hs; local rad=0.62*hs
-  local xs,ys=PF.xs,PF.ys
-  for i=0,15 do
-    local t=i/16*math.pi*2
-    local sx,sy,v=draw.WorldToScreen(hx+math.cos(t)*rad,brimy,hz+math.sin(t)*rad)
-    if not v then return nil end
-    xs[i+1]=sx; ys[i+1]=sy
-  end
-  -- projected brim radius. below ~3px the 16 rim segments and 8 ribs land on
-  -- the same pixels and the black shadow pass of every line wins, so the hat
-  -- reads as a black cap on the head; one filled silhouette keeps the colour.
-  local bcx,bcy,bcv=draw.WorldToScreen(hx,brimy,hz)
-  local pxr=0
-  if bcv then
-    for i=1,16 do
-      local dx,dy=xs[i]-bcx,ys[i]-bcy
-      pxr=pxr+math.sqrt(dx*dx+dy*dy)
-    end
-    pxr=pxr/16
-  end
-  if pxr>0 and pxr<3 then
+-- China Hat for NPCs: the player ESP's cone, laid out in screen space from the
+-- head point and the probe's pixels-per-stud scale. That removes the 17 world
+-- projections per NPC per frame the wireframe used to pay, and keeps the cone
+-- glued to the head at any distance. sq is the brim squash from the camera's
+-- elevation above the rig, so the ring reads as an ellipse seen from above
+-- rather than a flat circle. Lives on PF rather than in a new main-level local
+-- so the chunk stays inside its 200-local budget. Returns the apex y when the
+-- cone was drawn, so the caller can lift the name row above it.
+PF.npc_hat=function(px,py,pps,hs,c,sq)
+  if not px or not py or not pps or pps<=0 then return nil end
+  if not sq or sq<0 then sq=1 elseif sq>1 then sq=1 end
+  local rad=0.62*hs*pps
+  local brimy=py-0.44*hs*pps
+  local apex=py-1.16*hs*pps
+  if rad<3 then
+    -- below ~3px the rim segments and ribs land on the same pixels and the black
+    -- shadow pass of every line wins; one filled silhouette keeps the colour
     if draw.PolyFilled then
-      draw.PolyFilled({{ax,ay},{xs[1],ys[1]},{xs[9],ys[9]}},c)
+      draw.PolyFilled({{px,apex},{px+rad,brimy},{px-rad,brimy}},c)
     end
-  else
-    for i=1,16 do local j=i%16+1; draw.Line(xs[i],ys[i],xs[j],ys[j],c,1) end
-    for i=1,16,2 do draw.Line(ax,ay,xs[i],ys[i],c,1) end
+    return apex
   end
-  return ay
+  local hc,hsn=PF.hc,PF.hs
+  local xs,ys=PF.xs,PF.ys
+  local seg=rad<4 and 8 or (rad<12 and 12 or 16)
+  for i=1,seg do
+    local k=math.floor((i-1)*16/seg)+1
+    xs[i]=px+hc[k]*rad
+    ys[i]=brimy+hsn[k]*rad*sq
+  end
+  for i=1,seg do local j=i%seg+1; draw.Line(xs[i],ys[i],xs[j],ys[j],c,1) end
+  for i=1,seg,2 do draw.Line(px,apex,xs[i],ys[i],c,1) end
+  return apex
 end
 
 local function run_npc_esp_h()
   if not cfg.npc_esp_enabled then return end
   -- the sweep is stepped once per frame from OnFrame; stepping it here too
   -- would double the per-frame work
-  local list=cached_npcs or cache_npcs or NPC_LIST
+  local list=cache_npcs or NPC_LIST
   if #list==0 then return end
   local sw,sh=scr()
-  local maxd=cfg.npcs_max_dist or 400
-  if maxd<1 then maxd=400 end
-  -- the slider stops at 400; clamp in case a saved config predates the cap
-  if maxd>400 then maxd=400 end
-  -- slider is metres, the cull is in studs: 200m ~ 714 studs, so squaring the
+  local maxd=cfg.npcs_max_dist or 300*M_PER_STUD
+  if maxd<1 then maxd=300*M_PER_STUD end
+  -- the row stops at 300 game metres; clamp in case a saved config predates it
+  if maxd>300*M_PER_STUD then maxd=300*M_PER_STUD end
+  -- slider is metres, the cull is in studs: 300m ~ 1071 studs, so squaring the
   -- slider directly culled targets that the distance row said were in range
   local maxsq=maxd*maxd/NPC_COL.m2
   local ox,oy,oz=npc_origin()
+  -- camera position + forward for the behind-camera cull below. Nil on builds
+  -- without a camera object, in which case the cull is simply skipped.
+  local cpx,cpy,cpz,cfx,cfy,cfz
+  pcall(function()
+    local cp=camera.GetPosition()
+    local lv=camera.GetLookVector()
+    if cp then cpx,cpy,cpz=cp.X,cp.Y,cp.Z end
+    if lv then cfx,cfy,cfz=lv.X or 0,lv.Y or 0,lv.Z or 0 end
+  end)
+  if cfx and cfx*cfx+cfy*cfy+cfz*cfz<1e-9 then cfx=nil end
   local tsz=cfg.npcs_font_size or 13
   -- one hue clock per frame for Chroma NPC; the per-NPC offset further down
   -- spreads neighbouring targets across the wheel so they do not pulse together
@@ -3312,7 +3641,7 @@ local function run_npc_esp_h()
     -- or hidden without touching the Name row (and without the scan/aim/trigger
     -- passes losing it, which key off the entry itself)
     if n and not (n.is_heli and not cfg.npcs_heli) then
-      -- the heli has its own hardcoded ceiling instead of the Max Distance
+      -- the heli has its own hardcoded ceiling instead of the NPC Range
       -- slider, so moving the slider never hides or reveals it
       local lim=n.is_heli and NPC_COL.heli2 or maxsq
       -- cheap cull first: the scan already recorded a position, so anything well
@@ -3328,6 +3657,12 @@ local function run_npc_esp_h()
         -- drawing from cached coordinates made the overlay lag behind the target.
         wx,wy,wz=bone_xyz(n.root)
         if not wx then wx,wy,wz=n.x,n.y,n.z end
+      end
+      -- behind-camera cull on the live root: the projection, the probe and the
+      -- whole bone pass are skipped for a rig the camera cannot see
+      if wx and cfx then
+        local ax,ay,az=wx-cpx,wy-cpy,wz-cpz
+        if ax*cfx+ay*cfy+az*cfz<=0 then wx=nil end
       end
       if wx then
         local d_sq=0
@@ -3345,7 +3680,7 @@ local function run_npc_esp_h()
           local behind=false
           local pps=0
           if sx then
-            local okp,px2,py2=pcall(draw.WorldToScreen,wx,wy+1,wz)
+            local okp,_,py2=pcall(draw.WorldToScreen,wx,wy+1,wz)
             if okp and type(py2)=="number" then
               pps=sy-py2
               behind=pps<-1
@@ -3353,12 +3688,19 @@ local function run_npc_esp_h()
           end
           -- Hardcoded corpse filter, re-read live so a target that dies between
           -- sweeps vanishes immediately instead of waiting for the next pass.
-          -- The Humanoid wrapper is cached on the entry by the scan.
+          -- The Humanoid wrapper is cached on the entry by the scan, and the read
+          -- is staggered over three frames per rig: a corpse still disappears
+          -- within ~50 ms, but the health call no longer runs for every NPC on
+          -- every frame.
           local dead=(n.hp or 1)<=0
           local hum=n.hum
-          if hum then
+          if hum and (not n.hpn or FRAME>=n.hpn) then
             local okh,hv=pcall(PF.hp,hum)
-            if okh and type(hv)=="number" and hv<=0 then dead=true end
+            if okh and type(hv)=="number" then
+              n.hp=hv
+              if hv<=0 then dead=true end
+            end
+            n.hpn=FRAME+3
           end
           if sx and not behind and not dead then
             -- n.color is the swatch table itself, so only copy when it is short
@@ -3424,7 +3766,9 @@ local function run_npc_esp_h()
               elseif expect>4 then
                 hh=expect
               else
-                -- no usable probe or bones (R6 rig, odd build): distance curve
+                -- no usable probe or bones (R6 rig, odd build): distance curve.
+                -- This one stays in real metres - the 1530 constant is tuned to
+                -- that scale - so it must not switch to the stud readout.
                 local dm0=math.floor(math.sqrt(d_sq)*NPC_COL.m)
                 hh=clamp(1530/math.max(1,dm0),24,190)*(n.is_heli and 1.26 or 0.9)
               end
@@ -3469,8 +3813,22 @@ local function run_npc_esp_h()
             -- China Hat: same cone as the player ESP, anchored to this NPC's
             -- Head bone and drawn before the text rows so the name can be
             -- lifted above the apex when the hat would otherwise cover it.
-            if cfg.npc_hat and not n.is_heli then
-              local ay=PF.npc_hat(n,(cfg.npc_hat_size or 100)/100,PF.tint(cch,col.npc_hat_col or NPC_COL.hat,1))
+            if cfg.npc_hat and not n.is_heli and NPC_POK[1] and pps>0 then
+              -- brim squash: the camera's elevation above this rig decides how
+              -- open the ring looks. The head sits ~1.6 studs above the root we
+              -- have here; at eye level the brim closes to a line, looking down
+              -- on a target it opens into a full ellipse.
+              local sq=1
+              if cpx then
+                local hx2,hy2,hz2=wx-cpx,(wy+1.6)-cpy,wz-cpz
+                local hl=math.sqrt(hx2*hx2+hy2*hy2+hz2*hz2)
+                if hl>0.001 then sq=math.abs(hy2)/hl end
+              elseif cfy then
+                sq=math.abs(cfy)
+              end
+              if sq>1 then sq=1 end
+              local ay=PF.npc_hat(NPC_PX[1],NPC_PY[1],pps,(cfg.npc_hat_size or 100)/100,
+                PF.tint(cch,col.npc_hat_col or NPC_COL.hat,1),sq)
               if ay and ay<name_y then name_y=ay-tsz-4 end
             end
             -- the heli label rides on its own toggle, so it still draws with the
@@ -3504,10 +3862,11 @@ local function run_npc_esp_h()
               draw.Text(cx-tw*0.5, name_y, txt, PF.tint(cch,nc,1), tsz)
             end
             if cfg.npcs_show_dist then
-              -- cache the label per whole metre: formatting a new string and
-              -- measuring it for every NPC every frame was pure garbage, and the
-              -- integer only changes when the target actually moves a metre
-              local dm=math.floor(math.sqrt(d_sq)*NPC_COL.m)
+              -- cache the label per whole game metre (a stud). Formatting a new
+              -- string and measuring it for every NPC every frame was pure
+              -- garbage, and the integer only changes when the target moves a
+              -- metre
+              local dm=math.floor(math.sqrt(d_sq))
               local dtxt=n.dtxt
               if not dtxt or n.dm~=dm or n.dtsz~=tsz then
                 dtxt=string.format("[%dm]",dm)
@@ -3575,142 +3934,6 @@ local function run_npc_esp_h()
       end
     end
   end
-end
-
-local function run_npc_esp()
-  run_npc_esp_h()
-end
-
-local function scan_npcs()
-  scan_npcs_task()
-end
-
-local function get_model_position_part2(inst)
-  if not inst then return nil end
-  if type(inst)=="userdata" and inst.ClassName then
-    if inst.ClassName=="Part" or inst.ClassName=="MeshPart" or inst.ClassName=="UnionOperation" or inst.ClassName=="BasePart" then return inst end
-  elseif type(inst)=="table" then
-    if inst.ClassName=="Part" or inst.ClassName=="MeshPart" then return inst end
-  end
-  if inst.PrimaryPart then return inst.PrimaryPart end
-  if inst.FindFirstChild then
-    for _,n in ipairs({"HumanoidRootPart","UpperTorso","Torso","Head","RootPart"}) do
-      local p=nil; pcall(function() p=inst:FindFirstChild(n) end)
-      if p then return p end
-    end
-  end
-  if inst.GetChildren then
-    local ch=inst:GetChildren()
-    for i=1,#ch do
-      local c=ch[i]
-      if type(c)=="userdata" and c.ClassName then
-        if c.ClassName=="Part" or c.ClassName=="MeshPart" or c.ClassName=="UnionOperation" or c.ClassName=="BasePart" then return c end
-      end
-    end
-  end
-  return nil
-end
-
-local function safe_pos2(part)
-  if not part then return nil end
-  local pos=nil
-  pcall(function() pos=part.Position end)
-  if not pos then return nil end
-  local x=pos.X or pos.x; local y=pos.Y or pos.y; local z=pos.Z or pos.z
-  if not x then return nil end
-  return x,y,z
-end
-
-local function scan_npcs()
-  local now=os.clock and os.clock() or 0
-  if now-(last_npc_scan or 0)<0.25 then return end
-  last_npc_scan=now
-  cache_npcs={}
-  if not cfg.npcs_on then return end
-  local ws=nil
-  pcall(function()
-    if game then
-      ws=game.Workspace or game.workspace
-      if not ws and game.GetService then ws=game:GetService("Workspace") end
-    end
-  end)
-  if not ws then return end
-
-  local lp=players.LocalPlayer or (players.GetLocalPlayer and players.GetLocalPlayer())
-
-  pcall(function()
-    local npcs_folder=nil
-    if ws.FindFirstChild then npcs_folder=ws:FindFirstChild("Npcs") end
-    if not npcs_folder and ws.Npcs then npcs_folder=ws.Npcs end
-    if npcs_folder and npcs_folder.GetChildren then
-      local children=npcs_folder:GetChildren()
-      for i=1,#children do
-        local inst=children[i]
-        pcall(function()
-          if lp and lp.Character and inst==lp.Character then return end
-          local ismodel=false
-          if inst.ClassName=="Model" then ismodel=true
-          elseif inst.IsA then local okm,vm=pcall(function() return inst:IsA("Model") end); if okm and vm then ismodel=true end end
-          if not ismodel then return end
-          if cfg.npcs_soldiers==false then return end
-          local root=get_model_position_part2(inst)
-          if not root then return end
-          local rx,ry,rz=safe_pos2(root)
-          if not rx then return end
-          local hum=nil
-          if inst.FindFirstChildOfClass then pcall(function() hum=inst:FindFirstChildOfClass("Humanoid") end) end
-          if not hum and inst.FindFirstChild then hum=inst:FindFirstChild("Humanoid") end
-          local hp=100; local maxhp=100
-          if hum then
-            hp=hum.Health or 100; maxhp=hum.MaxHealth or 100
-            if maxhp<1 then maxhp=100 end
-            if hp<0 then hp=0 end
-          end
-          local head_p=nil; local torso_p=nil
-          if inst.FindFirstChild then
-            head_p=inst:FindFirstChild("Head"); torso_p=inst:FindFirstChild("UpperTorso") or inst:FindFirstChild("Torso")
-          end
-          local npc_parts={}
-          if inst.FindFirstChild then
-            for _,n in ipairs({"Head","UpperTorso","LowerTorso","HumanoidRootPart","LeftUpperArm","LeftLowerArm","LeftHand","RightUpperArm","RightLowerArm","RightHand","LeftUpperLeg","LeftLowerLeg","LeftFoot","RightUpperLeg","RightLowerLeg","RightFoot","Torso"}) do
-              local pt=nil; pcall(function() pt=inst:FindFirstChild(n) end); if pt then npc_parts[n]=pt end
-            end
-          end
-          table.insert(cache_npcs,{x=rx,y=ry,z=rz,name=inst.Name or "NPC",obj=inst,char=inst,root=root,head=head_p or root,torso=torso_p or root,parts=npc_parts,hp=hp,max_hp=maxhp,is_heli=false,color={0.25,0.85,1.00,1}})
-        end)
-      end
-    end
-  end)
-
-  pcall(function()
-    if cfg.npcs_heli==false then return end
-    local hf=nil
-    if ws.FindFirstChild then hf=ws:FindFirstChild("FustPatrolHeli") end
-    if not hf and ws.FustPatrolHeli then hf=ws.FustPatrolHeli end
-    if hf then
-      local heli=nil
-      if hf.FindFirstChild then heli=hf:FindFirstChild("PatrolHeliModel") or hf:FindFirstChild("PatrolHeli") end
-      if not heli then heli=hf end
-      if heli then
-        local ismod=false
-        if heli.ClassName=="Model" then ismod=true elseif heli.IsA then local okm,vm=pcall(function() return heli:IsA("Model") end); if okm and vm then ismod=true end end
-        if ismod then
-          local root=get_model_position_part2(heli) or (heli.PrimaryPart)
-          if root then
-            local rx,ry,rz=safe_pos2(root)
-            if rx then
-              local hum=nil
-              if heli.FindFirstChildOfClass then hum=heli:FindFirstChildOfClass("Humanoid") end
-              if not hum and heli.FindFirstChild then hum=heli:FindFirstChild("Humanoid") end
-              local hp=5000; local maxhp=5000
-              if hum then hp=hum.Health or 5000; maxhp=hum.MaxHealth or 5000 end
-              table.insert(cache_npcs,{x=rx,y=ry,z=rz,name="Patrol Helicopter",obj=heli,char=heli,root=root,head=root,torso=root,parts={},hp=hp,max_hp=maxhp,is_heli=true,color={1.00,0.20,0.20,1}})
-            end
-          end
-        end
-      end
-    end
-  end)
 end
 
 local function run_gunmods()
@@ -3824,7 +4047,7 @@ local function run_trigger()
   -- NPC pass for the trigger: same radius test as the players above, nearest
   -- joint inside the circle wins. Own toggle, fed by the NPC scan snapshot.
   if cfg.trig_npc then
-    local list=cached_npcs or cache_npcs or NPC_LIST
+    local list=cache_npcs or NPC_LIST
     for ni=1,#list do
       local n=list[ni]
       if n and n.inst and (n.hp or 1)>0 then
@@ -3916,38 +4139,69 @@ end
 
 local function run_aim()
   aim_tgt=nil
-  -- mouse aim only: the camera path (camera.LookAt) is retired, so the aimbot
-  -- always moves the cursor instead of turning the camera.
-  local atype=2
-  if not cfg.aim_on then
-    aim_pt=nil
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    cam_track_part=nil
-    return
-  end
+  -- mouse aim only: the aimbot always moves the cursor, it never turns the
+  -- camera, so there is no type switch to read.
+  if not cfg.aim_on then return end
   local lp; pcall(function() lp=entity.GetLocalPlayer() end)
   local ok,players=pcall(entity.GetPlayers)
-  if not ok or type(players)~="table" then
-    aim_pt=nil
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    cam_track_part=nil
-    return
-  end
+  if not ok or type(players)~="table" then return end
   local cx,cy=aim_center()
   local r=cfg.aim_fov or 160
   local style=cfg.aim_priority or 1
   local fstyle=cfg.aim_fovstyle or 1
   -- the range row is metres; every cull below, and AIM_ST.maxdist, works in studs
   local maxdist=(cfg.aim_range or 1500)/PF.m
-  -- Bow drop only holds up at close range, so the aim range is capped while an
-  -- arrow is what is actually being compensated. The cap is 100 m, converted to
-  -- studs to match the culls above. AIM_ST.gbow is the held-weapon flag cached by
-  -- the previous frame's swap detection.
-  if cfg.aim_bowdrop and AIM_ST.gbow and maxdist>100/PF.m then maxdist=100/PF.m end
+  -- Held-weapon lookup, re-run only on a swap. It sits above the range cull so
+  -- the Bow Drop cap always sees the bow that is actually in your hands rather
+  -- than last frame's, and the lead pass at the bottom of this function reuses
+  -- the cached speed, gravity and bow numbers instead of reading them twice.
+  if cfg.aim_pred or cfg.aim_bowdrop then
+    local tname=""
+    local okt,tv=pcall(PF.tool,lp)
+    if okt and type(tv)=="string" then tname=tv end
+    if tname=="" and lp then
+      local okc,ch=pcall(PF.char,lp)
+      if okc and ch then
+        local fn=ch.FindFirstChildOfClass
+        if type(fn)=="function" then
+          local okf,tl=pcall(fn,ch,"Tool")
+          if okf and tl then
+            local okn,nv=pcall(PF.name,tl)
+            if okn and type(nv)=="string" then tname=nv end
+          end
+        end
+      end
+    end
+    if tname~=AIM_ST.gname then
+      AIM_ST.gname=tname
+      local sp,gr,bw=0,8,false
+      if tname~="" and not is_melee_or_utility_tool(tname) then
+        local low=tname:lower()
+        for gi=1,#PF.bows do
+          if low:find(PF.bows[gi][1],1,true) then
+            bw=true; gr=PF.bows[gi][4]
+            -- full-draw speed, held constant so the aim point does not move
+            -- with the draw charge
+            sp=PF.bows[gi][2]+PF.bows[gi][3]; break
+          end
+        end
+        if not bw then
+          for gi=1,#PF.guns do
+            if low:find(PF.guns[gi][1],1,true) then
+              sp=PF.guns[gi][2]; gr=PF.guns[gi][3]; break
+            end
+          end
+          if sp<=0 then sp=1400 end
+        end
+      end
+      AIM_ST.gspeed=sp; AIM_ST.ggrav=gr; AIM_ST.gbow=bw
+    end
+  end
+  -- Bow drop holds up out to 300 game metres, so the aim range is capped while
+  -- an arrow is what is actually being compensated. Every range in this function
+  -- is already in studs and the game counts one stud as one metre, so the cap is
+  -- a plain 300 - the same unit the distance labels print.
+  if cfg.aim_bowdrop and AIM_ST.gbow and maxdist>300 then maxdist=300 end
   local camx,camy,camz
   local cp; pcall(function() cp=camera.GetPosition() end)
   if cp then camx,camy,camz=cp.X,cp.Y,cp.Z end
@@ -3958,7 +4212,14 @@ local function run_aim()
   local blist=PF.aimset[aimbone] or AIM_BONES
   AIM_ST.cx,AIM_ST.cy=cx,cy
   AIM_ST.r=r; AIM_ST.fstyle=fstyle; AIM_ST.style=style
+  -- Players are only engaged inside the Player Range row, the same way the NPC
+  -- pass honours NPC Range, so the aimbot can never lock a target the player ESP
+  -- is hiding. Aimbot Range stays the outer bound: whichever is smaller wins.
+  -- aim_try culls on AIM_ST.maxdist, so narrow it for this pass and put it back
+  -- afterwards, leaving the NPC pass measuring against Aimbot Range.
+  AIM_ST.aimmax=maxdist
   AIM_ST.maxdist=maxdist
+  if cfg.esp_maxdist and cfg.esp_maxdist/PF.m<AIM_ST.maxdist then AIM_ST.maxdist=cfg.esp_maxdist/PF.m end
   AIM_ST.camx,AIM_ST.camy,AIM_ST.camz=camx,camy,camz
   AIM_ST.best=nil; AIM_ST.best_s=nil
   for _,p in ipairs(players) do
@@ -4032,6 +4293,9 @@ local function run_aim()
       end
     end)
   end
+  -- Player Range only bound the player pass; the NPC pass below measures against
+  -- Aimbot Range (then narrows to NPC Range itself).
+  AIM_ST.maxdist=AIM_ST.aimmax
   local best,best_s=AIM_ST.best,AIM_ST.best_s
   -- NPC pass: same scorer, fed by the NPC snapshot the ESP scanner keeps warm.
   -- Its own toggle, so NPC ESP can stay off. Skipped once a player is dead-centre
@@ -4039,7 +4303,15 @@ local function run_aim()
   -- and a player is already in the FOV, so an NPC can never steal a shot from a
   -- visible player.
   if cfg.aim_npc and best_s~=0 and not (cfg.aim_pp and best~=nil) then
-    local list=cached_npcs or cache_npcs or NPC_LIST
+    local list=cache_npcs or NPC_LIST
+    -- NPCs are only engaged inside the NPC ESP Range row, so the aimbot
+    -- can never lock onto a rig the NPC ESP is hiding. The aimbot range still
+    -- applies as the outer bound - whichever of the two is smaller wins. aim_try
+    -- culls on AIM_ST.maxdist, so narrow it for this pass and put it back after.
+    AIM_ST.aimmax=AIM_ST.maxdist
+    AIM_ST.nmax=cfg.npcs_max_dist or 300*M_PER_STUD
+    if AIM_ST.nmax<1 then AIM_ST.nmax=300*M_PER_STUD end
+    if AIM_ST.maxdist>AIM_ST.nmax/PF.m then AIM_ST.maxdist=AIM_ST.nmax/PF.m end
     -- NPC_BONES order: 1 Head, 2-3 torso, 4-9 arms, 10-15 legs. index 0 is the
     -- root part, which is not in the bone array.
     local i0,i1
@@ -4072,93 +4344,69 @@ local function run_aim()
         end
       end
     end
+    AIM_ST.maxdist=AIM_ST.aimmax
     best=AIM_ST.best; best_s=AIM_ST.best_s
   end
   -- Auto gun lead + bow drop.
-  -- The held tool is read every frame but only re-mapped on a weapon swap, so the
-  -- muzzle velocity always matches what is in your hands. Flight time comes from
-  -- that velocity, and the aim point is pushed ahead by the target's own motion
-  -- over that time, measured from where the aim point was last frame. Guns get no
-  -- bullet drop; the separate Bow Drop toggle lifts the point only while a bow is
-  -- held, because an arrow falls far more than a bullet over the same distance.
+  -- The weapon was mapped above on a swap, so the muzzle velocity, fall rate and
+  -- bow numbers already match what is in your hands. Flight time comes from that
+  -- velocity, the aim point is pushed ahead by the target's own travel over that
+  -- time, and the same shot is then lifted by the projectile's real gravity:
+  -- 0.5*g*t^2, with g straight out of the dump instead of a fudge factor. Guns
+  -- get their drop from Auto Gun Lead (it is the same ballistic solution as the
+  -- lead, just a couple of studs at sniper range); the separate Bow Drop toggle
+  -- lifts arrows only, because an arrow falls metres over the same distance.
   -- Melee and utility tools get nothing, and neither does an empty hand.
   if cfg.aim_pred or cfg.aim_bowdrop then
-    local tname=""
-    local okt,tv=pcall(PF.tool,lp)
-    if okt and type(tv)=="string" then tname=tv end
-    if tname=="" and lp then
-      local okc,ch=pcall(PF.char,lp)
-      if okc and ch then
-        local fn=ch.FindFirstChildOfClass
-        if type(fn)=="function" then
-          local okf,tl=pcall(fn,ch,"Tool")
-          if okf and tl then
-            local okn,nv=pcall(PF.name,tl)
-            if okn and type(nv)=="string" then tname=nv end
-          end
-        end
-      end
-    end
-    -- the speed only changes on a weapon swap, so the name match is cached
-    if tname~=AIM_ST.gname then
-      AIM_ST.gname=tname
-      local sp=0
-      if tname~="" and not is_melee_or_utility_tool(tname) then
-        local low=tname:lower()
-        for gi=1,#PF.guns do
-          if low:find(PF.guns[gi][1],1,true) then sp=PF.guns[gi][2]; break end
-        end
-        if sp<=0 then sp=1400 end
-      end
-      AIM_ST.gspeed=sp
-      -- bows (including the crossbow) are the only tools that get drop
-      AIM_ST.gbow=(tname~="" and tname:lower():find("bow",1,true)~=nil) or false
-    end
-    if cfg.aim_bowdrop and not AIM_ST.grav then
-      -- fall rate for the bow arc, read once and cached
-      local gv=nil
-      local okg,v=pcall(function() return workspace.GetGravity() end)
-      if okg and type(v)=="number" and v>0 then gv=v end
-      if not gv then
-        local ws; pcall(function() ws=game.Workspace end)
-        local fn=ws and ws.GetGravity
-        if type(fn)=="function" then
-          local ok2,v2=pcall(fn,ws)
-          if ok2 and type(v2)=="number" and v2>0 then gv=v2 end
-        end
-      end
-      AIM_ST.grav=gv or 196.2
-    end
+    -- Arrow speed is pinned to a full draw. Scaling it by the live draw charge
+    -- made the drop compensation explode on a half-drawn arrow and yank the
+    -- view upward during and right after the shot, so the aim point uses the
+    -- top speed the bow can reach and stays put.
     local sp=AIM_ST.gspeed or 0
     if sp>0 and best and camx then
       local dx0=best.x-camx; local dy0=best.y-camy; local dz0=best.z-camz
-      local tof=math.sqrt(dx0*dx0+dy0*dy0+dz0*dz0)/sp
-      if tof>2 then tof=2 end
-      -- lead comes from where the aim point was last frame. a jump too big to be
-      -- a walking target is a bone swap or a target switch, so the estimate
-      -- resets instead of flinging the crosshair across the screen. the ceiling
-      -- is a fast sprint, not the old 200 studs/s, which let a head-to-torso
-      -- swap through and turned it into a one-frame shake.
-      local vx,vy,vz=AIM_ST.vx or 0,AIM_ST.vy or 0,AIM_ST.vz or 0
-      local px,py,pz=AIM_ST.px,AIM_ST.py,AIM_ST.pz
-      if px and _dt and _dt>0.0001 then
-        local mx,my,mz=best.x-px,best.y-py,best.z-pz
-        if mx*mx+my*my+mz*mz<=(70*_dt)*(70*_dt) then
-          vx=vx*0.55+(mx/_dt)*0.45
-          vy=vy*0.55+(my/_dt)*0.45
-          vz=vz*0.55+(mz/_dt)*0.45
+      local dist=math.sqrt(dx0*dx0+dy0*dy0+dz0*dz0)
+      -- Target travel. The live root velocity is exact and carries none of the
+      -- animation noise a bone-to-bone delta does, so it is used whenever the
+      -- wrapper exposes it (players). NPC rigs have no Velocity, so those keep
+      -- the old estimate from where the aim point was last frame.
+      local vx,vy,vz=0,0,0
+      local okv,lvx,lvy,lvz=pcall(PF.vel,best.obj)
+      local live=okv and type(lvx)=="number"
+      if live then
+        vx,vy,vz=lvx,lvy,lvz
+      else
+        vx,vy,vz=AIM_ST.vx or 0,AIM_ST.vy or 0,AIM_ST.vz or 0
+        -- a jump too big to be a walking target is a bone swap or a target
+        -- switch, so the estimate resets instead of flinging the crosshair
+        -- across the screen. the ceiling is a fast sprint, not the old
+        -- 200 studs/s, which let a head-to-torso swap through as a shake.
+        local px,py,pz=AIM_ST.px,AIM_ST.py,AIM_ST.pz
+        if px and _dt and _dt>0.0001 then
+          local mx,my,mz=best.x-px,best.y-py,best.z-pz
+          if mx*mx+my*my+mz*mz<=(70*_dt)*(70*_dt) then
+            vx=vx*0.55+(mx/_dt)*0.45
+            vy=vy*0.55+(my/_dt)*0.45
+            vz=vz*0.55+(mz/_dt)*0.45
+          else
+            vx,vy,vz=0,0,0
+          end
         else
           vx,vy,vz=0,0,0
         end
-      else
-        vx,vy,vz=0,0,0
+        -- idle animation micro-movement is not travel: deadband it so the lead
+        -- does not drift while a target stands still
+        local vsp=math.sqrt(vx*vx+vy*vy+vz*vz)
+        if vsp<2.5 then vx,vy,vz=0,0,0 end
+        AIM_ST.vx,AIM_ST.vy,AIM_ST.vz=vx,vy,vz
       end
-      -- idle animation micro-movement is not travel: deadband it so the lead
-      -- does not drift while a target stands still
-      local vsp=math.sqrt(vx*vx+vy*vy+vz*vz)
-      if vsp<2.5 then vx,vy,vz=0,0,0 end
-      AIM_ST.vx,AIM_ST.vy,AIM_ST.vz=vx,vy,vz
       AIM_ST.px,AIM_ST.py,AIM_ST.pz=best.x,best.y,best.z
+      -- flight time to the bone, then one refinement at the lead point so the
+      -- lead is not sized from a distance the target has already left
+      local tof=dist/sp
+      local qx=dx0+vx*tof; local qy=dy0+vy*tof; local qz=dz0+vz*tof
+      tof=math.sqrt(qx*qx+qy*qy+qz*qz)/sp
+      if tof>2 then tof=2 end
       local ax,ay,az=best.x,best.y,best.z
       if cfg.aim_pred then
         -- The lead offset is low-passed in world space. The velocity sample is
@@ -4181,14 +4429,20 @@ local function run_aim()
         -- no lead: forget the filtered offset so re-enabling starts clean
         AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
       end
-      if cfg.aim_bowdrop and AIM_ST.gbow then
-        -- The engine's free-fall rate overstates an arrow's arc badly, so the
-        -- lift is trimmed by PF.bowarc and capped. The cap sits just above what
-        -- the 100 m bow range needs (~70 studs), so the curve holds all the way
-        -- out instead of flattening at the far end, while still guarding against
-        -- an absurd time of flight.
-        local lift=0.5*(AIM_ST.grav or 196.2)*tof*tof*PF.bowarc
-        if lift>72 then lift=72 end
+      local grav=AIM_ST.ggrav or 8
+      if AIM_ST.gbow then
+        -- arrows: Bow Drop owns the holdover. Across the 300 game metre cap the
+        -- longest flight is ~1.4 s (hunting bow), so the clamp only guards
+        -- against a bad gravity read - it never shortens a real shot.
+        if cfg.aim_bowdrop then
+          local lift=0.5*grav*tof*tof
+          if lift>400 then lift=400 end
+          ay=ay+lift
+        end
+      elseif cfg.aim_pred then
+        -- bullets: a few studs at sniper range, so cap it well under a body
+        local lift=0.5*grav*tof*tof
+        if lift>40 then lift=40 end
         ay=ay+lift
       end
       if ax~=best.x or ay~=best.y or az~=best.z then
@@ -4219,156 +4473,27 @@ local function run_aim()
   local engaged=(held and best~=nil) or false
   local dz=cfg.aim_dz or 0
   if not engaged then
-    aim_dz_hold=false
     aim_dz_state=0
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
     return
   end
-  if atype==1 and dz>0 then
-    local d=math.sqrt(best.sd)
-    local resume=dz+math.max(2,dz*0.5)
-    if d<=dz then aim_dz_hold=true
-    elseif d>resume then aim_dz_hold=false end
-    if aim_dz_hold then
-      if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-      cam_tracking=false
-      cam_track_obj=nil
-      engaged=false
-    end
-  else
-    aim_dz_hold=false
+  local sm=math.floor(cfg.aim_smooth or 1)
+  if sm<1 then sm=1 end
+  local ex,ey=best.sx-cx,best.sy-cy
+  local dist=math.sqrt(ex*ex+ey*ey)
+  if aim_dz_tgt~=best.name then aim_dz_state=0; aim_dz_tgt=best.name end
+  local zs=dz
+  local zstart=zs*2.2
+  if aim_dz_state==1 then
+    if dist>zstart then aim_dz_state=0 end
+  elseif dist<=zs then
+    aim_dz_state=1
   end
-  if not engaged then
-    aim_dz_state=0
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    return
-  end
-  if atype==1 then
-    local sm=math.floor(cfg.aim_smooth or 1)
-    if sm<1 then sm=1 end
-    -- Drop/lead compensation moves the aim point off the bone, so a raw
-    -- camera.LookAt(part) would throw the correction away. When the predictor
-    -- produced a point, aim at that world position instead of the part.
-    if best.ax and best.ay and best.az and camera.LookAt then
-      if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-      cam_tracking=false
-      cam_track_obj=nil
-      cam_track_part=nil
-      if sm==1 then
-        pcall(camera.LookAt,best.ax,best.ay,best.az)
-      else
-        pcall(camera.LookAt,best.ax,best.ay,best.az,sm)
-      end
-      return
+  if aim_dz_state==0 then
+    if dist<0.5 then return end
+    local sx,sy=aim_step(ex,ey,sm)
+    if math.abs(sx)>0.001 or math.abs(sy)>0.001 then
+      aim_emit(sx,sy)
     end
-    if best.part or best.obj then
-      local p=best.obj
-      local part=best.part
-      if not part and p then
-        local char=nil
-        local okc,cv=pcall(PF.char,p)
-        if okc then char=cv end
-        if char then
-          local aimbone=cfg.aim_bone or 1
-          local blist=PF.aimset[aimbone] or AIM_BONES
-          if aimbone==8 then
-            local bestd,bp=nil,nil
-            for bi=1,#blist do
-              local okf,pr=pcall(PF.find,char,blist[bi])
-              if okf and pr then
-                local okp,pp=pcall(PF.pos,pr)
-                if okp and pp then
-                  local psx,psy,pvis=draw.WorldToScreen(pp.X,pp.Y,pp.Z)
-                  if pvis then
-                    local pdx,pdy=psx-cx,psy-cy
-                    local pd=pdx*pdx+pdy*pdy
-                    if not bestd or pd<bestd then bestd=pd; bp=pr end
-                  end
-                end
-              end
-            end
-            part=bp
-          else
-            for bi=1,#blist do
-              local okf,pr=pcall(PF.find,char,blist[bi])
-              if okf and pr then part=pr; break end
-            end
-          end
-          if not part then
-            local okf,pr=pcall(PF.find,char,"HumanoidRootPart")
-            if okf then part=pr end
-          end
-        end
-      end
-      if part and camera.LookAt then
-        if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-        cam_tracking=false
-        cam_track_obj=nil
-        cam_track_part=nil
-        if sm==1 then
-          pcall(camera.LookAt,part)
-        else
-          pcall(camera.LookAt,part,sm)
-        end
-        if aim_tgt then aim_tgt.part=part end
-        return
-      elseif best and best.x and best.y and best.z and camera.LookAt then
-        if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-        cam_tracking=false
-        cam_track_obj=nil
-        cam_track_part=nil
-        if sm==1 then
-          pcall(camera.LookAt,best.x,best.y,best.z)
-        else
-          pcall(camera.LookAt,best.x,best.y,best.z,sm)
-        end
-        if aim_tgt and best.part then aim_tgt.part=best.part end
-        return
-      end
-    end
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    cam_track_part=nil
-    return
-  elseif atype==2 then
-    local sm=math.floor(cfg.aim_smooth or 1)
-    if sm<1 then sm=1 end
-    local ex,ey=best.sx-cx,best.sy-cy
-    local dist=math.sqrt(ex*ex+ey*ey)
-    if aim_dz_tgt~=best.name then aim_dz_state=0; aim_dz_tgt=best.name end
-    local zs=dz
-    local zstart=zs*2.2
-    if aim_dz_state==1 then
-      if dist>zstart then aim_dz_state=0 end
-    elseif dist<=zs then
-      aim_dz_state=1
-    end
-    if aim_dz_state==0 then
-      if dist<0.5 then
-        if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-        cam_tracking=false
-        cam_track_obj=nil
-        return
-      end
-      local sx,sy=aim_step(ex,ey,sm)
-      if math.abs(sx)>0.001 or math.abs(sy)>0.001 then
-        aim_emit(sx,sy)
-      end
-    end
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    return
-  else
-    if cam_tracking and camera.StopTracking then pcall(camera.StopTracking) end
-    cam_tracking=false
-    cam_track_obj=nil
-    return
   end
 end
 local function draw_aim()
@@ -4492,7 +4617,7 @@ local function draw_menu()
   else draw.RectFilled(dx-3,dy-3,6,6, a(theme.accent,1), 1) end
   -- product line, sat just past the diamond so it reads as part of the lockup
   tmid(dx+11, y, TOPBAR_H, "Fust Survival", a(theme.sub,1), 12)
-  trt(x+w-PAD,y+12,16,"v1.0", a(theme.faint,1),10)
+  trt(x+w-PAD,y+12,16,"v1.1", a(theme.faint,1),10)
 
   -- vertical tab rail
   local sy=ctop+6
@@ -4695,6 +4820,21 @@ CFG.load=function(slot,quiet)
     end
     applied=true
   end
+  -- Range rows whose maximum is a game-metre cap. A slot saved before the unit
+  -- change (or before a cap was lowered) can hold a bigger real-metre value,
+  -- which the menu would print past the row's maximum, so pull those back to the
+  -- cap on load instead of letting an old profile exceed it.
+  if cfg.aim_range and cfg.aim_range>1500*M_PER_STUD then cfg.aim_range=1500*M_PER_STUD end
+  if cfg.esp_maxdist and cfg.esp_maxdist>1500*M_PER_STUD then cfg.esp_maxdist=1500*M_PER_STUD end
+  if cfg.npcs_max_dist and cfg.npcs_max_dist>300*M_PER_STUD then cfg.npcs_max_dist=300*M_PER_STUD end
+  if cfg.rad_range and cfg.rad_range>500*M_PER_STUD then cfg.rad_range=500*M_PER_STUD end
+  if cfg.plants_range and cfg.plants_range>200*M_PER_STUD then cfg.plants_range=200*M_PER_STUD end
+  if cfg.pick_range and cfg.pick_range>150*M_PER_STUD then cfg.pick_range=150*M_PER_STUD end
+  if cfg.veh_range and cfg.veh_range>1000*M_PER_STUD then cfg.veh_range=1000*M_PER_STUD end
+  if cfg.nodes_range and cfg.nodes_range>500*M_PER_STUD then cfg.nodes_range=500*M_PER_STUD end
+  if cfg.bd_range and cfg.bd_range>400*M_PER_STUD then cfg.bd_range=400*M_PER_STUD end
+  if cfg.loot_range and cfg.loot_range>400*M_PER_STUD then cfg.loot_range=400*M_PER_STUD end
+  if cfg.base_range and cfg.base_range>175*M_PER_STUD then cfg.base_range=175*M_PER_STUD end
   if g then g.EGOFUST_SLOT=slot end
   cfg_dirty=false
   if not quiet then
@@ -4733,9 +4873,11 @@ CFG.load(cfg.cfg_slot,true)
 -- FRAME LOOP
 -- UI only: the window, the tab rail and the controls. No gameplay runs here.
 -- =========================================================================
+
 function OnFrame()
   _dt=utility.GetDeltaTime and utility.GetDeltaTime() or 0.016
   if not _dt or _dt<=0 or _dt>0.2 then _dt=0.016 end
+  FRAME=FRAME+1
   -- colour memo is per-frame: keeps picker changes live while letting every
   -- target share one table per swatch instead of allocating one each
   COL_MEM={}
@@ -4776,4 +4918,4 @@ function OnFrame()
   end
 end
 
-pcall(function() notify.Success("Fust Survival v1.0 loaded","Right Shift to toggle menu",5) end)
+pcall(function() notify.Success("Fust Survival v1.1 loaded","Right Shift to toggle menu",5) end)
