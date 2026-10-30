@@ -379,9 +379,15 @@ end end end
 local ui={ open=true, x=140,y=90,w=600,h=460, tab=1,
   drag=nil, capture=nil, capture_ok=false, picker=nil,
   m={x=0,y=0,down=false,was=false,click=false}, menu_edge=false, appear=0 }
--- HUD panel positions. nil means "use the anchored default", so a resize or a
--- fresh load always lands somewhere sane; dragging stores an absolute spot.
-local hud_pos={}
+-- HUD panel positions (watermark, keybind list, feature bar). These are not menu
+-- rows: dragging a panel writes its absolute screen spot straight into cfg, so
+-- the normal profile save/restore carries it and the panels come back exactly
+-- where they were left. -1 means "never placed", which falls back to the
+-- anchored corner; the draw code clamps a restored spot to the current screen so
+-- a smaller window can never park a panel off the edge.
+cfg.hud_mark_x,cfg.hud_mark_y=-1,-1
+cfg.hud_keys_x,cfg.hud_keys_y=-1,-1
+cfg.hud_bar_x,cfg.hud_bar_y=-1,-1
 local function ts(s,sz) local w,h=draw.GetTextSize(s,sz or 12); return w or 0, h or 12 end
 local function tmid(x,y,h,s,c,sz) sz=sz or 12; local _,th=ts(s,sz); draw.Text(x,y+(h-th)*0.5,s,c,sz) end
 local function trt(xr,y,h,s,c,sz) sz=sz or 12; local tw,th2=ts(s,sz); draw.Text(xr-tw,y+(h-th2)*0.5,s,c,sz) return tw end
@@ -1577,12 +1583,10 @@ local function run_hud()
     local fw=ts(ft,11); local uw=ts(ut,11)
     local ph=30
     local wpx=14+lw+5+8+6+pw2+10+1+10+fw+10+uw+14
-    local mp=hud_pos.mark
-    local wx=mp and mp.x or (sw-wpx-16)
-    local wy=mp and mp.y or 14
+    local wx=(cfg.hud_mark_x or -1)>=0 and cfg.hud_mark_x or (sw-wpx-16)
+    local wy=(cfg.hud_mark_y or -1)>=0 and cfg.hud_mark_y or 14
     wx=clamp(wx,0,math.max(0,sw-wpx)); wy=clamp(wy,0,math.max(0,sh-ph))
     if ui.appear>0.9 and inside(wx,wy,wpx,ph) and ui.m.click and not ui.drag then
-      hud_pos.mark={x=wx,y=wy}
       ui.drag={k="hud_mark",ox=ui.m.x-wx,oy=ui.m.y-wy}; ui.m.click=false
     end
     hud_panel(wx,wy,wpx,ph,apm,3)
@@ -1608,14 +1612,12 @@ local function run_hud()
     local rows=hud_key_rows()
     if #rows>0 then
       local rh=21; local pw=178; local ph=40+#rows*rh
-      local kp=hud_pos.keys
-      local kx=kp and kp.x or (sw-pw-16)
+      local kx=(cfg.hud_keys_x or -1)>=0 and cfg.hud_keys_x or (sw-pw-16)
       -- bottom-right by default: the watermark owns the top-right corner and
       -- the radar anchors there too, so the list would sit on top of both
-      local ky=kp and kp.y or (sh-ph-18)
+      local ky=(cfg.hud_keys_y or -1)>=0 and cfg.hud_keys_y or (sh-ph-18)
       kx=clamp(kx,0,math.max(0,sw-pw)); ky=clamp(ky,0,math.max(0,sh-ph))
       if ui.appear>0.9 and inside(kx,ky,pw,ph) and ui.m.click and not ui.drag then
-        hud_pos.keys={x=kx,y=ky}
         ui.drag={k="hud_keys",ox=ui.m.x-kx,oy=ui.m.y-ky}; ui.m.click=false
       end
       hud_panel(kx,ky,pw,ph,apk,4)
@@ -1651,12 +1653,10 @@ local function run_hud()
       for i,lb in ipairs(feats) do
         local cw=math.max(48, ts(lb,10)+20); widths[i]=cw; tot=tot+cw
       end
-      local bp=hud_pos.bar
-      local bx=bp and bp.x or (sw*0.5-tot*0.5)
-      local by=bp and bp.y or (sh-ph-18)
+      local bx=(cfg.hud_bar_x or -1)>=0 and cfg.hud_bar_x or (sw*0.5-tot*0.5)
+      local by=(cfg.hud_bar_y or -1)>=0 and cfg.hud_bar_y or (sh-ph-18)
       bx=clamp(bx,0,math.max(0,sw-tot)); by=clamp(by,0,math.max(0,sh-ph))
       if ui.appear>0.9 and inside(bx,by,tot,ph) and ui.m.click and not ui.drag then
-        hud_pos.bar={x=bx,y=by}
         ui.drag={k="hud_bar",ox=ui.m.x-bx,oy=ui.m.y-by}; ui.m.click=false
       end
       hud_panel(bx,by,tot,ph,apb,4)
@@ -4670,9 +4670,11 @@ local function update_input()
   if ui.drag and (ui.drag.k=="hud_mark" or ui.drag.k=="hud_keys" or ui.drag.k=="hud_bar") then
     local sw,sh=scr()
     local key=ui.drag.k=="hud_mark" and "mark" or (ui.drag.k=="hud_keys" and "keys" or "bar")
-    hud_pos[key]=hud_pos[key] or {}
-    hud_pos[key].x=clamp(ui.m.x-ui.drag.ox,0,sw-24)
-    hud_pos[key].y=clamp(ui.m.y-ui.drag.oy,0,sh-14)
+    -- straight into the profile keys: the panels come back where they were left
+    -- after a reload, and the debounced autosave persists the drag
+    cfg["hud_"..key.."_x"]=clamp(ui.m.x-ui.drag.ox,0,sw-24)
+    cfg["hud_"..key.."_y"]=clamp(ui.m.y-ui.drag.oy,0,sh-14)
+    cfg_dirty=true
   end
   local mk=bind.menu_key or 0xA1; local held=ekey(mk)
   if held and not ui.menu_edge then ui.open=not ui.open; ui.picker=nil; ui.capture=nil end
@@ -4861,6 +4863,10 @@ CFG.reset=function()
       if d then col[it.color]={d[1],d[2],d[3],d[4]} end
     end
   end end end
+  -- HUD panels go back to their anchored corners on a reset as well
+  cfg.hud_mark_x,cfg.hud_mark_y=-1,-1
+  cfg.hud_keys_x,cfg.hud_keys_y=-1,-1
+  cfg.hud_bar_x,cfg.hud_bar_y=-1,-1
   cfg_dirty=true
   pcall(function() notify.Success("Defaults restored","",3) end)
 end
