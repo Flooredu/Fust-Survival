@@ -119,10 +119,11 @@ local SCHEMA = {
     {t="slider",id="aim_dz",label="Deadzone",min=0,max=20,default=0,suf="px"},
     {t="toggle",id="aim_team",label="Team Check",default=true},
     {t="toggle",id="aim_npc",label="Target NPC",default=false},
-    {t="toggle",id="aim_pp",label="Target Players over NPC",default=false,show=function() return cfg.aim_npc end},
+    {t="toggle",id="aim_pp",label="Target Players over NPC & Heli",default=false,show=function() return cfg.aim_npc or cfg.aim_heli end},
+    {t="toggle",id="aim_heli",label="Target Patrol Heli",default=false},
     {t="toggle",id="aim_wall",label="Wall Check",default=false},
     {t="toggle",id="aim_pred",label="Auto Gun Lead",default=false},
-    {t="toggle",id="aim_bowdrop",label="Bow Drop",default=false},
+    {t="toggle",id="aim_bowdrop",label="Bow Lead & Drop",default=false},
     {t="toggle",id="aim_tline",label="Target Line",default=true,color="c_tline"},
     {t="toggle",id="aim_fovcircle",label="Show FOV Circle",default=true,color="c_fov"},
     {t="toggle",id="aim_fovchroma",label="Chroma FOV",default=false},
@@ -872,6 +873,9 @@ local PF={
     return nil
   end,
   desc=function(o) return o:GetDescendants() end,
+  -- ancestry test for the Wall Check: raycast.Cast hands back the instance it
+  -- hit, and anything sitting on the target or on the local player is not a wall
+  isd=function(o,a) return o:IsDescendantOf(a) end,
   -- reused scratch buffers for the china-hat ring, so it stops allocating two
   -- tables per player per frame
   xs={}, ys={},
@@ -2645,11 +2649,22 @@ local function aim_in_fov(dx,dy,r,style)
 end
 
 local trig_next=0
-local trig_hold=nil
-local trig_dwell=0
 local trig_latch=false
 local trig_miss=0
 local TRIG_GRACE=0.25
+-- Reaction-delay timer per target, keyed by UserId (players) or by the rig model
+-- (NPCs). The wrappers themselves cannot be compared frame to frame - a player
+-- object is rebuilt on every GetPlayers() call - so the old object comparison
+-- reset the timer every frame and any delay above 0 ms could never elapse.
+-- Per-target timers also stop two bodies that trade the closest bone by a
+-- sub-pixel from restarting each other's wait.
+local trig_dw={}
+-- Drop every bit of trigger state: used when the trigger is off, the menu is
+-- open, the key is up, or the target has been gone longer than the grace.
+local function trig_reset()
+  trig_latch=false; trig_miss=0
+  for k in pairs(trig_dw) do trig_dw[k]=nil end
+end
 
 local AIM_BONES={"Head","Torso","HumanoidRootPart","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm","LeftHand","RightHand","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg","LeftFoot","RightFoot","UpperTorso","LowerTorso"}
 
@@ -2716,13 +2731,102 @@ PF.trigset={
   AIM_BONES,
 }
 
+-- Wall Check line of sight, shared by the aimbot and the triggerbot.
+--
+-- The old test was one raycast.IsVisible from the camera to the bone, and it
+-- lied both ways. The ray ended exactly on the bone, so the last thing it
+-- touched was the target's own body - a "blocked" answer on a shot that was
+-- wide open. And it started at the camera, which in third person sits behind
+-- the character and can be buried in a wall or inside the player's own head,
+-- which reads as blocked from the very first stud. That is the half of the time
+-- the trigger refused to fire at a target standing in the open.
+--
+-- This walks the same line with raycast.Cast, which reports the instance it hit
+-- instead of a bare boolean, so only world geometry counts as a wall: anything
+-- belonging to the target (body, hat, held tool) or to the local player is
+-- stepped over. The cast stops a fraction of a stud short of the bone, so the
+-- target's own surface cannot register at the far end, and a first hit within a
+-- stud of the eye means the camera is inside geometry, so that is stepped over
+-- too. Four steps covers own body -> target body -> wall. Any raycast error
+-- fails open: the check must never cost a shot it cannot justify.
+local function los_clear(ox,oy,oz,tx,ty,tz,char)
+  local dx,dy,dz=tx-ox,ty-oy,tz-oz
+  local d2=dx*dx+dy*dy+dz*dz
+  if d2<1e-6 then return true end
+  local d=math.sqrt(d2)
+  local ux,uy,uz=dx/d,dy/d,dz/d
+  -- stop short of the bone: the aim point sits inside the target's own part, so
+  -- a full-length ray always ends on the body it is aiming at
+  local len=d-0.4
+  if len<0.2 then return true end
+  local ex,ey,ez=ox+ux*len,oy+uy*len,oz+uz*len
+  local cast=raycast and raycast.Cast
+  local vnew=Vector3 and Vector3.New
+  -- Cast is documented for Vector3 arguments only, so the points are wrapped;
+  -- if either half is missing on this build, fall back to the boolean test that
+  -- does take six numbers
+  if type(cast)~="function" or type(vnew)~="function" then
+    local ok,v=pcall(raycast.IsVisible,ox,oy,oz,ex,ey,ez)
+    return (not ok) or v~=false
+  end
+  -- the local character is resolved once a frame, not once per candidate
+  if PF.lfr~=FRAME then
+    PF.lfr=FRAME
+    local lch=nil
+    local lp
+    pcall(function() lp=entity.GetLocalPlayer() end)
+    if lp then
+      local okc,c=pcall(PF.char,lp)
+      if okc then lch=c end
+    end
+    PF.lch=lch
+  end
+  local lch=PF.lch
+  local px,py,pz=ox,oy,oz
+  local t=0
+  -- the far end never moves, so only the start point is rebuilt per step
+  local vEnd=vnew(ex,ey,ez)
+  for step=1,4 do
+    local ok,hit,pos,dist,inst=pcall(cast,vnew(px,py,pz),vEnd)
+    if not ok or not hit or not inst then return true end
+    local own=false
+    if inst==char then
+      own=true
+    elseif char then
+      local okd,isd=pcall(PF.isd,inst,char)
+      if okd and isd then own=true end
+    end
+    if not own and lch then
+      if inst==lch then
+        own=true
+      else
+        local okd,isd=pcall(PF.isd,inst,lch)
+        if okd and isd then own=true end
+      end
+    end
+    local nd=tonumber(dist) or 0
+    if nd<0 then nd=0 end
+    -- a hit this close to the eye is the camera clipping into geometry, not a
+    -- wall in front of the player: step out of it and keep looking
+    if not own and not (step==1 and nd<=0.6) then return false end
+    -- a zero-distance hit means the ray started inside that part (the eye is in
+    -- the local head), so dist cannot carry us past it: hop clear of the body
+    local adv=nd+0.05
+    if own and nd<0.5 then adv=1.1 end
+    t=t+adv
+    if t>=len-0.05 then return true end
+    px,py,pz=ox+ux*t,oy+uy*t,oz+uz*t
+  end
+  return true
+end
+
 -- Scoring state for one aim pass, plus the scorer itself. Keeping this in a
 -- real function with a state table means no closure is allocated per player or
 -- per NPC per frame, and each bone only reads the property the chosen priority
 -- actually needs.
 local AIM_ST={cx=0,cy=0,r=0,fstyle=1,style=1,maxdist=0,
   camx=nil,camy=nil,camz=nil,best=nil,best_s=nil}
-local function aim_try(hx,hy,hz,part,obj,name,health)
+local function aim_try(hx,hy,hz,part,obj,name,health,char)
   local camx,camy,camz=AIM_ST.camx,AIM_ST.camy,AIM_ST.camz
   local pd3
   if camx then
@@ -2737,10 +2841,7 @@ local function aim_try(hx,hy,hz,part,obj,name,health)
   local dx,dy=sx-AIM_ST.cx,sy-AIM_ST.cy
   if not aim_in_fov(dx,dy,AIM_ST.r,AIM_ST.fstyle) then return end
   if cfg.aim_wall and camx then
-    local ok2,v=pcall(raycast.IsVisible,camx,camy,camz,hx,hy,hz)
-    if ok2 and v==false then return end
-    local ok3,v2=pcall(raycast.IsVisible,camx,camy,camz,hx,hy,hz-0.2)
-    if ok3 and v2==false then return end
+    if not los_clear(camx,camy,camz,hx,hy,hz,char) then return end
   end
   local sd=dx*dx+dy*dy
   local score=sd
@@ -2756,7 +2857,7 @@ local function aim_try(hx,hy,hz,part,obj,name,health)
   end
   if not AIM_ST.best_s or score<AIM_ST.best_s then
     AIM_ST.best_s=score
-    AIM_ST.best={x=hx,y=hy,z=hz,sx=sx,sy=sy,sd=sd,name=name,obj=obj,part=part}
+    AIM_ST.best={x=hx,y=hy,z=hz,sx=sx,sy=sy,sd=sd,name=name,obj=obj,part=part,char=char}
   end
 end
 
@@ -3325,8 +3426,9 @@ local function scan_npcs_task()
   -- single frame ever pays for the whole map.
   npc_scan_frames=npc_scan_frames+1
   -- the aimbot / triggerbot NPC toggles keep the scan warm on their own, so
-  -- targeting NPCs works without the NPC ESP master switch being on
-  if not (cfg.npc_esp_enabled or cfg.aim_npc or cfg.trig_npc) then
+  -- targeting NPCs works without the NPC ESP master switch being on. The patrol
+  -- heli is resolved by this same sweep, so its aim toggle counts too.
+  if not (cfg.npc_esp_enabled or cfg.aim_npc or cfg.trig_npc or cfg.aim_heli) then
     if #NPC_LIST>0 or npc_sweep_active then
       NPC_LIST={}
       NPC_NEXT={}
@@ -3970,7 +4072,7 @@ end
 
 local function run_trigger()
   if not cfg.trig_on then
-    trig_hold=nil; trig_dwell=0; trig_latch=false; trig_miss=0
+    trig_reset()
     trig_next=0
     return
   end
@@ -3979,20 +4081,20 @@ local function run_trigger()
     if trig_next<0 then trig_next=0 end
   end
   if ui.open and inside(ui.x,ui.y,ui.w,ui.h) then
-    trig_hold=nil; trig_dwell=0; trig_latch=false; trig_miss=0
+    trig_reset()
     return
   end
   if cfg.trig_always==false then
     local hk=bind.trig_key or 0
     if hk==0 or not ekey(hk) then
-      trig_hold=nil; trig_dwell=0; trig_latch=false; trig_miss=0
+      trig_reset()
       return
     end
   end
   local lp; pcall(function() lp=entity.GetLocalPlayer() end)
   local okp,players=pcall(entity.GetPlayers)
   if not okp or type(players)~="table" then
-    trig_hold=nil; trig_dwell=0; trig_latch=false; trig_miss=0
+    trig_reset()
     return
   end
   local sw,sh=scr(); local cx,cy=sw*0.5,sh*0.5
@@ -4037,7 +4139,13 @@ local function run_trigger()
             local d2=dx*dx+dy*dy
             if d2<=bd then
               bd=d2
-              best={sx=sx,sy=sy,p=p,bone=bones[bi]}
+              -- identity for the reaction delay. GetPlayers() builds a fresh
+              -- player object on every call, so the wrapper never matches the
+              -- one held from last frame; the UserId is the stable key (the
+              -- wrapper's Player field is the fallback, same as esp_mate).
+              local uid=p.UserId
+              if not uid and p.Player then uid=p.Player.UserId end
+              best={sx=sx,sy=sy,p=p,bone=bones[bi],key=uid or p}
             end
           end
         end
@@ -4089,7 +4197,9 @@ local function run_trigger()
                     local d2=dx*dx+dy*dy
                     if d2<=bd then
                       bd=d2
-                      best={bx=bx,by=by,bz=bz,sx=sx,sy=sy,p=n.inst}
+                      -- the rig's own stable key from the NPC snapshot (its
+                      -- address, or the model when the address is unreadable)
+                      best={bx=bx,by=by,bz=bz,sx=sx,sy=sy,p=n.inst,key=n.key or n.inst}
                     end
                   end
                 end
@@ -4107,17 +4217,21 @@ local function run_trigger()
       pcall(draw.RectFilled,best.sx-2,best.sy-2,4,4,a(col.c_trig or {1,0.2,0.2,1},0.9),2)
     end
   end
-  local tid = best and best.p or nil
-  if tid~=nil and tid==trig_hold then
-    trig_dwell=trig_dwell+_dt
+  -- Reaction delay, timed per target. The key has to be stable across frames
+  -- because a player object is rebuilt on every GetPlayers() call.
+  local tid = best and best.key or nil
+  if tid~=nil then
+    local d=(trig_dw[tid] or 0)+_dt
+    trig_dw[tid]=d
     trig_miss=0
-  elseif tid~=nil then
-    trig_hold=tid; trig_dwell=0; trig_miss=0
+    -- latched per target, so a fresh target under the crosshair starts its own
+    -- wait even while an earlier one was already past it
+    trig_latch=d>=(cfg.trig_react or 0)/1000
   else
     trig_miss=trig_miss+_dt
-    if trig_miss>TRIG_GRACE then trig_hold=nil; trig_dwell=0; trig_latch=false end
+    -- the engagement is over: every timer starts from zero next time
+    if trig_miss>TRIG_GRACE then trig_reset() end
   end
-  if tid~=nil and trig_dwell>=(cfg.trig_react or 0)/1000 then trig_latch=true end
   local ready=best~=nil and trig_latch
   if not ready then return end
   if trig_next>0 then return end
@@ -4127,8 +4241,12 @@ local function run_trigger()
     local bx,by,bz=best.bx,best.by,best.bz
     if not bx and best.bone then bx,by,bz=get_pos(best.p,best.bone) end
     if bx then
-      local okv,vis=pcall(raycast.IsVisible,camx,camy,camz,bx,by,bz)
-      if okv and vis==false then return end
+      -- the character this bone belongs to: a player object resolves to its
+      -- model, an NPC rig is already the model
+      local ch=best.p
+      local okc,cv=pcall(PF.char,ch)
+      if okc and cv then ch=cv end
+      if not los_clear(camx,camy,camz,bx,by,bz,ch) then return end
     end
   end
   trig_next=(cfg.trig_delay or 50)/1000
@@ -4152,7 +4270,7 @@ local function run_aim()
   -- the range row is metres; every cull below, and AIM_ST.maxdist, works in studs
   local maxdist=(cfg.aim_range or 1500)/PF.m
   -- Held-weapon lookup, re-run only on a swap. It sits above the range cull so
-  -- the Bow Drop cap always sees the bow that is actually in your hands rather
+  -- the Bow Lead & Drop cap always sees the bow that is actually in your hands rather
   -- than last frame's, and the lead pass at the bottom of this function reuses
   -- the cached speed, gravity and bow numbers instead of reading them twice.
   if cfg.aim_pred or cfg.aim_bowdrop then
@@ -4197,7 +4315,7 @@ local function run_aim()
       AIM_ST.gspeed=sp; AIM_ST.ggrav=gr; AIM_ST.gbow=bw
     end
   end
-  -- Bow drop holds up out to 300 game metres, so the aim range is capped while
+  -- Bow lead & drop holds up out to 300 game metres, so the aim range is capped while
   -- an arrow is what is actually being compensated. Every range in this function
   -- is already in studs and the game counts one stud as one metre, so the cap is
   -- a plain 300 - the same unit the distance labels print.
@@ -4241,7 +4359,7 @@ local function run_aim()
       if aimbone==8 then
         -- Closest to Crosshair: every on-screen bone is a candidate, but only
         -- the ones already inside the FOV pay for a part lookup, a position read
-        -- and the two visibility raycasts inside aim_try. ONE GetBonesScreen
+        -- and the Wall Check walk inside aim_try. ONE GetBonesScreen
         -- call replaces 17 FindFirstChild + 17 position reads + 17 projections
         -- per player per frame, and on a busy server most players are nowhere
         -- near the crosshair, so they now cost a single call.
@@ -4256,14 +4374,14 @@ local function run_aim()
               local okf,pr=pcall(PF.find,char,blist[bi])
               if okf and pr then
                 local okp,pp=pcall(PF.pos,pr)
-                if okp and pp then aim_try(pp.X,pp.Y,pp.Z,pr,p,nm,health) end
+                if okp and pp then aim_try(pp.X,pp.Y,pp.Z,pr,p,nm,health,char) end
               end
             end
           end
         end
         if not any then
           local okhp,hp=pcall(PF.head,p)
-          if okhp and hp then aim_try(hp.X,hp.Y,hp.Z,nil,p,nm,health) end
+          if okhp and hp then aim_try(hp.X,hp.Y,hp.Z,nil,p,nm,health,char) end
         end
       else
         -- named bone: the first part that resolves wins, same as before
@@ -4289,7 +4407,7 @@ local function run_aim()
             end
           end
         end
-        if hx then aim_try(hx,hy,hz,part,p,nm,health) end
+        if hx then aim_try(hx,hy,hz,part,p,nm,health,char) end
       end
     end)
   end
@@ -4299,9 +4417,9 @@ local function run_aim()
   local best,best_s=AIM_ST.best,AIM_ST.best_s
   -- NPC pass: same scorer, fed by the NPC snapshot the ESP scanner keeps warm.
   -- Its own toggle, so NPC ESP can stay off. Skipped once a player is dead-centre
-  -- on the crosshair, and skipped entirely when "Target Players over NPC" is on
-  -- and a player is already in the FOV, so an NPC can never steal a shot from a
-  -- visible player.
+  -- on the crosshair, and skipped entirely when "Target Players over NPC & Heli"
+  -- is on and a player is already in the FOV, so an NPC can never steal a shot
+  -- from a visible player.
   if cfg.aim_npc and best_s~=0 and not (cfg.aim_pp and best~=nil) then
     local list=cache_npcs or NPC_LIST
     -- NPCs are only engaged inside the NPC ESP Range row, so the aimbot
@@ -4325,7 +4443,9 @@ local function run_aim()
     else i0,i1=1,15 end
     for ni=1,#list do
       local n=list[ni]
-      if n and n.inst and (n.hp or 1)>0 then
+      -- the heli rides in this list for the ESP, but it has no humanoid rig: it
+      -- is aimed at by its own block below, never by a bone lookup
+      if n and n.inst and (n.hp or 1)>0 and not n.is_heli then
         local arr=n.bones
         if not arr then
           local okb,b=pcall(npc_bone_array,n.inst)
@@ -4338,7 +4458,7 @@ local function run_aim()
             if k==0 then pr=n.root else pr=arr[k] end
             if pr then
               local hx,hy,hz=bone_xyz(pr)
-              if hx then aim_try(hx,hy,hz,pr,n.inst,n.name,n.hp or 100) end
+              if hx then aim_try(hx,hy,hz,pr,n.inst,n.name,n.hp or 100,n.inst) end
             end
           end
         end
@@ -4347,15 +4467,36 @@ local function run_aim()
     AIM_ST.maxdist=AIM_ST.aimmax
     best=AIM_ST.best; best_s=AIM_ST.best_s
   end
-  -- Auto gun lead + bow drop.
-  -- The weapon was mapped above on a swap, so the muzzle velocity, fall rate and
-  -- bow numbers already match what is in your hands. Flight time comes from that
-  -- velocity, the aim point is pushed ahead by the target's own travel over that
-  -- time, and the same shot is then lifted by the projectile's real gravity:
-  -- 0.5*g*t^2, with g straight out of the dump instead of a fudge factor. Guns
-  -- get their drop from Auto Gun Lead (it is the same ballistic solution as the
-  -- lead, just a couple of studs at sniper range); the separate Bow Drop toggle
-  -- lifts arrows only, because an arrow falls metres over the same distance.
+  -- Patrol heli: its own toggle, its own ceiling and its own aim point. A heli
+  -- has no humanoid rig, so it never enters the bone loop above - the fuselage
+  -- part the NPC scan already resolved is the target. Range is the same 1000
+  -- game metres the ESP gives it, still under Aimbot Range, and the
+  -- "Target Players over NPC & Heli" row applies to it exactly like an NPC, so it
+  -- can never steal a shot from a player already under the crosshair. It sits
+  -- outside the Target NPC block so the heli can be aimed at on its own.
+  if cfg.aim_heli and best_s~=0 and not (cfg.aim_pp and best~=nil) then
+    local h=NPC_HELI
+    if h and h.inst and h.root then
+      local hl=1000/PF.m
+      if AIM_ST.maxdist>hl then AIM_ST.maxdist=hl end
+      local hx,hy,hz=bone_xyz(h.root)
+      if hx then aim_try(hx,hy,hz,h.root,h.inst,"Patrol Helicopter",h.hp or 5000,h.inst) end
+      AIM_ST.maxdist=AIM_ST.aimmax
+      best=AIM_ST.best; best_s=AIM_ST.best_s
+    end
+  end
+  -- Auto gun lead + bow lead & drop.
+  -- The held tool is read on every swap, so the speed, fall rate and class used
+  -- below always match what is in your hands. Nothing here is a setting: the
+  -- prediction for the weapon you are holding is picked from that weapon's own
+  -- numbers.
+  --
+  -- Both classes use the whole flight time. An arrow is flown by the server, and
+  -- a bullet is resolved from the shot the client sends (origin + direction) once
+  -- the server has it, so in both cases the target keeps travelling until the
+  -- round gets there. Cutting the lead back by an assumed network lag left the
+  -- crosshair consistently behind a strafing target, so the lag term is gone and
+  -- the lead is the plain v * tof projection the bow already used.
   -- Melee and utility tools get nothing, and neither does an empty hand.
   if cfg.aim_pred or cfg.aim_bowdrop then
     -- Arrow speed is pinned to a full draw. Scaling it by the live draw charge
@@ -4363,7 +4504,10 @@ local function run_aim()
     -- view upward during and right after the shot, so the aim point uses the
     -- top speed the bow can reach and stays put.
     local sp=AIM_ST.gspeed or 0
-    if sp>0 and best and camx then
+    local gbow=AIM_ST.gbow
+    -- a gun is only predicted while Auto Gun Lead is on; an arrow is predicted
+    -- whenever either helper is on, so turning one off cannot break the bow
+    if sp>0 and best and camx and (gbow or cfg.aim_pred) then
       local dx0=best.x-camx; local dy0=best.y-camy; local dz0=best.z-camz
       local dist=math.sqrt(dx0*dx0+dy0*dy0+dz0*dz0)
       -- Target travel. The live root velocity is exact and carries none of the
@@ -4408,30 +4552,35 @@ local function run_aim()
       tof=math.sqrt(qx*qx+qy*qy+qz*qz)/sp
       if tof>2 then tof=2 end
       local ax,ay,az=best.x,best.y,best.z
-      if cfg.aim_pred then
-        -- The lead offset is low-passed in world space. The velocity sample is
-        -- noisy frame to frame, and applying it raw made the crosshair buzz on
-        -- both camera and mouse aim; the filter keeps the average lead while
-        -- killing the per-frame jitter.
-        local k=(_dt or 0.016)*10
+      -- The lead offset is low-passed in world space. The velocity sample is
+      -- noisy frame to frame, and applying it raw made the crosshair buzz on
+      -- both camera and mouse aim; the filter keeps the average lead while
+      -- killing the per-frame jitter. It is seeded with the full lead on a new
+      -- target instead of easing up from the last one (or from zero): that ramp
+      -- was the other half of the under-prediction, leaving the crosshair behind
+      -- for the first tenth of a second of every engagement.
+      local lx,ly,lz=AIM_ST.lx,AIM_ST.ly,AIM_ST.lz
+      if not lx or AIM_ST.lchar~=best.char then
+        AIM_ST.lchar=best.char
+        lx,ly,lz=vx*tof,vy*tof,vz*tof
+      else
+        -- 16 rather than 10: a strafe reversal has to swing the whole lead, and
+        -- the slower filter spent ~0.2 s catching up. Arrows keep the old 10 -
+        -- their lead is several times longer, so the same smoothing matters more
+        -- there and the bow was already tracking well.
+        local k=(_dt or 0.016)*(gbow and 10 or 16)
         if k>1 then k=1 end
-        local lx=AIM_ST.lx or 0
-        local ly=AIM_ST.ly or 0
-        local lz=AIM_ST.lz or 0
         lx=lx+(vx*tof-lx)*k
         ly=ly+(vy*tof-ly)*k
         lz=lz+(vz*tof-lz)*k
-        AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=lx,ly,lz
-        ax=ax+lx
-        ay=ay+ly
-        az=az+lz
-      else
-        -- no lead: forget the filtered offset so re-enabling starts clean
-        AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
       end
+      AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=lx,ly,lz
+      ax=ax+lx
+      ay=ay+ly
+      az=az+lz
       local grav=AIM_ST.ggrav or 8
-      if AIM_ST.gbow then
-        -- arrows: Bow Drop owns the holdover. Across the 300 game metre cap the
+      if gbow then
+        -- arrows: Bow Lead & Drop owns the holdover. Across the 300 game metre cap the
         -- longest flight is ~1.4 s (hunting bow), so the clamp only guards
         -- against a bad gravity read - it never shortens a real shot.
         if cfg.aim_bowdrop then
@@ -4440,7 +4589,8 @@ local function run_aim()
           ay=ay+lift
         end
       elseif cfg.aim_pred then
-        -- bullets: a few studs at sniper range, so cap it well under a body
+        -- bullets: the drop is real over the whole flight, but a few studs at
+        -- sniper range, so the cap sits well under a body
         local lift=0.5*grav*tof*tof
         if lift>40 then lift=40 end
         ay=ay+lift
@@ -4459,12 +4609,14 @@ local function run_aim()
       -- does not compute a lead from a stale point
       AIM_ST.px=nil
       AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
+      AIM_ST.lchar=nil
     end
   else
     -- both toggles off: drop the sample and forget the cached gun, so switching
     -- either feature back on re-reads the held weapon and its prediction speed
     AIM_ST.px=nil
     AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
+    AIM_ST.lchar=nil
     AIM_ST.gname=nil
   end
   aim_tgt=best
@@ -4522,12 +4674,12 @@ local function draw_aim()
     end
   end
   -- active-state tag under the FOV region, so it is obvious which prediction
-  -- helpers are running. Bow Drop is appended to the right of Auto Gun Lead.
-  -- clamped to the screen so a huge FOV cannot push it off the bottom edge.
+  -- helpers are running. Bow Lead & Drop is appended to the right of Auto Gun
+  -- Lead, clamped to the screen so a huge FOV cannot push it off the bottom edge.
   local lbl=nil
   if cfg.aim_pred then lbl="(Auto Gun Lead)" end
   if cfg.aim_bowdrop then
-    if lbl then lbl=lbl.." (Bow Drop)" else lbl="(Bow Drop)" end
+    if lbl then lbl=lbl.." (Bow Lead & Drop)" else lbl="(Bow Lead & Drop)" end
   end
   if lbl then
     local lw=0
@@ -4617,7 +4769,7 @@ local function draw_menu()
   else draw.RectFilled(dx-3,dy-3,6,6, a(theme.accent,1), 1) end
   -- product line, sat just past the diamond so it reads as part of the lockup
   tmid(dx+11, y, TOPBAR_H, "Fust Survival", a(theme.sub,1), 12)
-  trt(x+w-PAD,y+12,16,"v1.1", a(theme.faint,1),10)
+  trt(x+w-PAD,y+12,16,"v1.2", a(theme.faint,1),10)
 
   -- vertical tab rail
   local sy=ctop+6
@@ -4924,4 +5076,4 @@ function OnFrame()
   end
 end
 
-pcall(function() notify.Success("Fust Survival v1.1 loaded","Right Shift to toggle menu",5) end)
+pcall(function() notify.Success("Fust Survival v1.2 loaded","Right Shift to toggle menu",5) end)
