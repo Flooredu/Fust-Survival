@@ -1357,19 +1357,21 @@ local function esp_player(p)
   -- No size cull here. A rig can be a couple of pixels tall and still be a
   -- legal aimbot target, so skipping it would hide a player the aimbot can
   -- lock. What is cut instead is detail: below ~20 px tall the eight corner
-  -- brackets overlap into a smudge and a 10 px held-item label is a grey line,
-  -- and those are the two most expensive per-target draws left (the corner box
-  -- is eight brackets, each carrying its own shadow pass). The box, name,
-  -- distance, health bar and the player himself are always drawn.
+  -- brackets overlap into a smudge, and that is the most expensive per-target
+  -- draw left (eight brackets, each carrying its own shadow pass). The box,
+  -- name, distance, held item, health bar and the player himself are always
+  -- drawn.
   local big = (bh==nil) or bh>=20
   local pname,ptool
   -- name only feeds the Name row and the health cache key, tool only feeds the
   -- Weapon row: reading them when those rows are off was two host calls per
-  -- player per frame for values nothing drew
+  -- player per frame for values nothing drew. The held item is read at every
+  -- range - it used to be skipped once the rig was under ~20 px tall, which is
+  -- why the label only appeared when the target was close.
   if cfg.esp_name or cfg.esp_hp then
     local okn,nv=pcall(PF.name,p); if okn then pname=nv end
   end
-  if cfg.esp_weapon and big then
+  if cfg.esp_weapon then
     local okt,tv=pcall(PF.tool,p); if okt then ptool=tv end
   end
   -- Head bone: it feeds the anchor, the head dot and the hat. It is only read
