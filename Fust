@@ -124,67 +124,69 @@ local CFG={}
 local SCHEMA = {
 {name="Aimbot", groups={
   {name="Aimbot", col=1, items={
-    {t="toggle",id="aim_on",label="Enable Aimbot"},
-    {t="bind",id="aim_toggle",label="Toggle Key",default=0x46},
-    {t="bind",id="aim_key",label="Aim Key",default=0x02},
-    {t="combo",id="aim_bone",label="Aim Bone",items={"Head","Body","Root","Left Arm","Right Arm","Left Leg","Right Leg","Closest to Crosshair"},default=1},
-    {t="combo",id="aim_priority",label="Target Priority",items={"Crosshair","Distance","Low HP"},default=1},
-    {t="combo",id="aim_fovstyle",label="FOV Style",items={"Circle","Box","Diamond","Corner Box"},default=1},
-    {t="slider",id="aim_fov",label="FOV",min=5,max=900,default=160,suf="px"},
+    {t="toggle",id="aim_on",label="Enable Aimbot (medium risk)"},
+    {t="bind",id="aim_toggle",label="Toggle Key",default=0x46,show=function() return cfg.aim_on end},
+    {t="bind",id="aim_key",label="Aim Key",default=0x02,show=function() return cfg.aim_on end},
+    {t="combo",id="aim_bone",label="Aim Bone",items={"Head","Body","Root","Left Arm","Right Arm","Left Leg","Right Leg","Closest to Crosshair"},default=1,show=function() return cfg.aim_on end},
+    {t="combo",id="aim_priority",label="Target Priority",items={"Crosshair","Distance","Low HP"},default=1,show=function() return cfg.aim_on end},
+    {t="combo",id="aim_fovstyle",label="FOV Style",items={"Circle","Box","Diamond","Corner Box"},default=1,show=function() return cfg.aim_on end},
+    {t="slider",id="aim_fov",label="FOV",min=20,max=500,default=160,suf="px",show=function() return cfg.aim_on end},
     -- 1500*M_PER_STUD is 1500 game metres in the stored real-metre units, so the
     -- row prints "1500 m" and the cull stops at 1500 studs
-    {t="slider",id="aim_range",label="Aimbot Range",min=20,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m"},
-    {t="slider",id="aim_smooth",label="Smoothing",min=1,max=50,default=8},
-    {t="slider",id="aim_dz",label="Deadzone",min=0,max=20,default=0,suf="px"},
-    {t="toggle",id="aim_team",label="Team Check",default=true},
-    {t="toggle",id="aim_npc",label="Target NPC",default=false},
-    {t="toggle",id="aim_pp",label="Target Players over NPC & Heli",default=false,show=function() return cfg.aim_npc or cfg.aim_heli end},
-    {t="toggle",id="aim_heli",label="Target Patrol Heli",default=false},
-    {t="toggle",id="aim_wall",label="Wall Check",default=false},
-    {t="toggle",id="aim_pred",label="Auto Gun Lead",default=false},
-    {t="toggle",id="aim_bowdrop",label="Bow Lead & Drop",default=false},
-    {t="toggle",id="aim_tline",label="Target Line",default=true,color="c_tline"},
-    {t="toggle",id="aim_fovcircle",label="Show FOV Circle",default=true,color="c_fov"},
-    {t="toggle",id="aim_fovchroma",label="Chroma FOV",default=false},
+    {t="slider",id="aim_range",label="Aimbot Range",min=20,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m",show=function() return cfg.aim_on end},
+    -- Mouse aim smooths the cursor: lower is faster, higher is gentler.
+    {t="slider",id="aim_smooth",label="Smoothing (higher reduces risk)",min=1,max=200,default=25,show=function() return cfg.aim_on end},
+    {t="slider",id="aim_dz",label="Deadzone (higher reduces risk)",min=0,max=20,default=0,suf="px",show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_sticky",label="Sticky Aim",default=false,show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_team",label="Team Check",default=true,show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_npc",label="Target NPC",default=false,show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_pp",label="Target Players over NPC & Heli",default=false,show=function() return cfg.aim_on and (cfg.aim_npc or cfg.aim_heli) end},
+    {t="toggle",id="aim_heli",label="Target Patrol Heli",default=false,show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_wall",label="Wall Check",default=false,show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_wpred",label="Auto Weapon Predict",default=false,show=function() return cfg.aim_on end},
+    {t="slider",id="aim_wpred_tsize",label="Auto Weapon Predict & Sticky Aim",min=9,max=18,default=12,show=function() return cfg.aim_on and (cfg.aim_wpred or cfg.aim_sticky) end},
+    {t="toggle",id="aim_tline",label="Target Line",default=true,color="c_tline",show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_fovcircle",label="Show FOV Circle",default=true,color="c_fov",show=function() return cfg.aim_on end},
+    {t="toggle",id="aim_fovchroma",label="Chroma FOV",default=false,show=function() return cfg.aim_on end},
   }},
 }},
 {name="ESP", groups={
   {name="Players", col=1, items={
     {t="toggle",id="esp_on",label="Enable ESP",default=true},
-    {t="bind",id="esp_toggle",label="Toggle Key",default=0x56},
-    {t="toggle",id="esp_box",label="Box",default=false,color="c_box"},
-    {t="combo",id="esp_boxstyle",label="Box Style",items={"Corner","Full","Picture"},default=1},
-    {t="combo",id="esp_picstyle",label="Picture Style",items={"King Von","Charlie Kirk","Lebron James","Benjamin Netanyahu"},default=1,show=function() return cfg.esp_boxstyle==3 end},
-    {t="slider",id="esp_pic_opacity",label="Picture Opacity",min=10,max=100,default=100,suf="%",show=function() return cfg.esp_boxstyle==3 end},
-    {t="toggle",id="esp_skel",label="Skeleton",default=true,color="c_enemy"},
-    {t="toggle",id="esp_headdot",label="Head Dot",default=false},
-    {t="slider",id="esp_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%",show=function() return cfg.esp_headdot end},
-    {t="toggle",id="chams_on",label="Chams",color="c_chams"},
-    {t="combo",id="chams_mode",label="Chams Style",items={"Filled","Outline"},default=1},
-    {t="toggle",id="esp_name",label="Name",default=true,color="c_name"},
-    {t="toggle",id="esp_dist",label="Distance",default=true,color="c_dist"},
-    {t="toggle",id="esp_hp",label="Health Bar",default=true},
-    {t="toggle",id="esp_hptext",label="Health Text",default=false,show=function() return cfg.esp_hp end},
-    {t="toggle",id="esp_weapon",label="Held item",default=true,color="c_weapon"},
-    {t="toggle",id="esp_team",label="Team Check",default=true},
+    {t="bind",id="esp_toggle",label="Toggle Key",default=0x56,show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_box",label="Box",default=false,color="c_box",show=function() return cfg.esp_on end},
+    {t="combo",id="esp_boxstyle",label="Box Style",items={"Corner","Full","Picture"},default=1,show=function() return cfg.esp_on end},
+    {t="combo",id="esp_picstyle",label="Picture Style",items={"King Von","Charlie Kirk","Lebron James","Benjamin Netanyahu"},default=1,show=function() return cfg.esp_on and cfg.esp_boxstyle==3 end},
+    {t="slider",id="esp_pic_opacity",label="Picture Opacity",min=10,max=100,default=100,suf="%",show=function() return cfg.esp_on and cfg.esp_boxstyle==3 end},
+    {t="toggle",id="esp_skel",label="Skeleton",default=true,color="c_enemy",show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_headdot",label="Head Dot",default=false,show=function() return cfg.esp_on end},
+    {t="slider",id="esp_headdot_size",label="Dot Size",min=25,max=100,default=100,suf="%",show=function() return cfg.esp_on and cfg.esp_headdot end},
+    {t="toggle",id="chams_on",label="Chams",color="c_chams",show=function() return cfg.esp_on end},
+    {t="combo",id="chams_mode",label="Chams Style",items={"Filled","Outline"},default=1,show=function() return cfg.esp_on and cfg.chams_on end},
+    {t="toggle",id="esp_name",label="Name",default=true,color="c_name",show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_dist",label="Distance",default=true,color="c_dist",show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_hp",label="Health Bar",default=true,show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_hptext",label="Health Text",default=false,show=function() return cfg.esp_on and cfg.esp_hp end},
+    {t="toggle",id="esp_weapon",label="Held item",default=true,color="c_weapon",show=function() return cfg.esp_on end},
+    {t="toggle",id="esp_team",label="Team Check",default=true,show=function() return cfg.esp_on end},
     -- same cap as the aimbot: 1500 game metres, which is 1500 studs to the cull
-    {t="slider",id="esp_maxdist",label="Player Range",min=0,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m"},
-    {t="slider",id="esp_textsize",label="Text Size",min=9,max=18,default=12},
+    {t="slider",id="esp_maxdist",label="Player Range",min=0,max=1500*M_PER_STUD,default=1500*M_PER_STUD,suf="m",show=function() return cfg.esp_on end},
+    {t="slider",id="esp_textsize",label="Text Size",min=9,max=18,default=12,show=function() return cfg.esp_on end},
   }},
   {name="Extras", col=2, items={
-    {t="toggle",id="esp_hat",label="China Hat",default=false,color="c_hat"},
-    {t="slider",id="esp_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.esp_hat end},
-    {t="toggle",id="esp_tracer",label="Tracers",color="c_tracer"},
-    {t="combo",id="esp_tracer_from",label="Tracer Origin",items={"Bottom","Center","Top"},default=1},
-    {t="toggle",id="esp_chroma",label="Chroma Visuals"},
+    {t="toggle",id="esp_hat",label="China Hat",default=false,color="c_hat",show=function() return cfg.esp_on end},
+    {t="slider",id="esp_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.esp_on and cfg.esp_hat end},
+    {t="toggle",id="esp_tracer",label="Tracers",color="c_tracer",show=function() return cfg.esp_on end},
+    {t="combo",id="esp_tracer_from",label="Tracer Origin",items={"Bottom","Center","Top"},default=1,show=function() return cfg.esp_on and cfg.esp_tracer end},
+    {t="toggle",id="esp_chroma",label="Chroma Visuals",show=function() return cfg.esp_on end},
   }},
   {name="Radar", col=2, items={
     {t="toggle",id="rad_on",label="Enable Radar"},
-    {t="slider",id="rad_size",label="Size",min=90,max=280,default=160},
-    {t="slider",id="rad_range",label="Range",min=10,max=500*M_PER_STUD,default=50,suf="m"},
-    {t="slider",id="rad_x",label="X Pos",min=0,max=100,default=88,suf="%"},
-    {t="slider",id="rad_y",label="Y Pos",min=0,max=100,default=8,suf="%"},
-    {t="slider",id="rad_alpha",label="Opacity",min=20,max=100,default=80,suf="%"},
+    {t="slider",id="rad_size",label="Size",min=90,max=280,default=160,show=function() return cfg.rad_on end},
+    {t="slider",id="rad_range",label="Range",min=10,max=500*M_PER_STUD,default=50,suf="m",show=function() return cfg.rad_on end},
+    {t="slider",id="rad_x",label="X Pos",min=0,max=100,default=88,suf="%",show=function() return cfg.rad_on end},
+    {t="slider",id="rad_y",label="Y Pos",min=0,max=100,default=8,suf="%",show=function() return cfg.rad_on end},
+    {t="slider",id="rad_alpha",label="Opacity",min=20,max=100,default=80,suf="%",show=function() return cfg.rad_on end},
   }},
 }},
 {name="NPC ESP", groups={
@@ -204,8 +206,8 @@ local SCHEMA = {
     {t="slider",id="npc_pic_opacity",label="Picture Opacity",min=10,max=100,default=100,suf="%",show=function() return cfg.npc_esp_enabled and cfg.npc_boxstyle==3 end},
   }},
   {name="Settings", col=2, items={
-    {t="slider",id="npcs_max_dist",label="NPC Range",min=0,max=300*M_PER_STUD,default=300*M_PER_STUD,suf="m"},
-    {t="slider",id="npcs_font_size",label="Text Size",min=9,max=18,default=13},
+    {t="slider",id="npcs_max_dist",label="NPC Range",min=0,max=300*M_PER_STUD,default=300*M_PER_STUD,suf="m",show=function() return cfg.npc_esp_enabled end},
+    {t="slider",id="npcs_font_size",label="Text Size",min=9,max=18,default=13,show=function() return cfg.npc_esp_enabled end},
     {t="toggle",id="npc_hat",label="China Hat",default=false,color="npc_hat_col",show=function() return cfg.npc_esp_enabled end},
     {t="slider",id="npc_hat_size",label="Hat Size",min=40,max=220,default=100,suf="%",show=function() return cfg.npc_esp_enabled and cfg.npc_hat end},
     {t="toggle",id="npc_chroma",label="Chroma NPC",default=false,show=function() return cfg.npc_esp_enabled end},
@@ -215,101 +217,105 @@ local SCHEMA = {
 {name="World", groups={
   {name="Loot Containers", col=1, items={
     {t="toggle",id="loot_on",label="Enable Loot ESP"},
-    {t="toggle",id="loot_barrels",label="Barrels",default=true,color="c_lootbarrels"},
-    {t="toggle",id="loot_crates",label="Crates",default=true,color="c_lootcrates"},
-    {t="toggle",id="loot_military",label="Military",default=true,color="c_lootmilitary"},
-    {t="toggle",id="loot_elite",label="Elite",default=true,color="c_lootelite"},
-    {t="toggle",id="loot_dist",label="Show Distance",default=true},
-    {t="slider",id="loot_range",label="Loot Range",min=0,max=225*M_PER_STUD,default=225*M_PER_STUD,suf="m"},
-    {t="slider",id="loot_text",label="Loot Text Size",min=9,max=18,default=12},
+    {t="toggle",id="loot_barrels",label="Barrels",default=true,color="c_lootbarrels",show=function() return cfg.loot_on end},
+    {t="toggle",id="loot_crates",label="Crates",default=true,color="c_lootcrates",show=function() return cfg.loot_on end},
+    {t="toggle",id="loot_military",label="Military",default=true,color="c_lootmilitary",show=function() return cfg.loot_on end},
+    {t="toggle",id="loot_elite",label="Elite",default=true,color="c_lootelite",show=function() return cfg.loot_on end},
+    {t="toggle",id="loot_dist",label="Show Distance",default=true,show=function() return cfg.loot_on end},
+    {t="slider",id="loot_range",label="Loot Range",min=0,max=225*M_PER_STUD,default=225*M_PER_STUD,suf="m",show=function() return cfg.loot_on end},
+    {t="slider",id="loot_text",label="Loot Text Size",min=9,max=18,default=12,show=function() return cfg.loot_on end},
   }},
   {name="Base", col=1, items={
     {t="toggle",id="base_on",label="Enable Base ESP"},
-    {t="toggle",id="loot_largebox",label="Large Box",default=true,color="c_lootlargebox"},
-    {t="toggle",id="loot_smallbox",label="Small Box",default=true,color="c_lootsmallbox"},
-    {t="toggle",id="loot_tc",label="Tool Cupboard",default=true,color="c_loottc"},
-    {t="toggle",id="loot_locker",label="Locker",default=true,color="c_lootlocker"},
-    {t="toggle",id="loot_bag",label="Sleeping Bag",default=true,color="c_lootbag"},
-    {t="toggle",id="base_shotguntrap",label="Shotgun Trap",default=true,color="c_baseshotguntrap"},
-    {t="toggle",id="base_autoturret",label="Auto Turret",default=true,color="c_baseautoturret"},
-    {t="toggle",id="base_aaturret",label="AA Turret",default=true,color="c_baseaaturret"},
-    {t="toggle",id="base_dist",label="Show Distance",default=true},
-    {t="slider",id="base_range",label="Base Range",min=0,max=175*M_PER_STUD,default=175*M_PER_STUD,suf="m"},
-    {t="slider",id="base_text",label="Base Text Size",min=9,max=18,default=12},
+    {t="toggle",id="loot_largebox",label="Large Box",default=true,color="c_lootlargebox",show=function() return cfg.base_on end},
+    {t="toggle",id="loot_smallbox",label="Small Box",default=true,color="c_lootsmallbox",show=function() return cfg.base_on end},
+    {t="toggle",id="loot_tc",label="Tool Cupboard",default=true,color="c_loottc",show=function() return cfg.base_on end},
+    {t="toggle",id="loot_locker",label="Locker",default=true,color="c_lootlocker",show=function() return cfg.base_on end},
+    {t="toggle",id="loot_bag",label="Sleeping Bag",default=true,color="c_lootbag",show=function() return cfg.base_on end},
+    {t="toggle",id="base_shotguntrap",label="Shotgun Trap",default=true,color="c_baseshotguntrap",show=function() return cfg.base_on end},
+    {t="toggle",id="base_autoturret",label="Auto Turret",default=true,color="c_baseautoturret",show=function() return cfg.base_on end},
+    {t="toggle",id="base_aaturret",label="AA Turret",default=true,color="c_baseaaturret",show=function() return cfg.base_on end},
+    {t="toggle",id="base_dist",label="Show Distance",default=true,show=function() return cfg.base_on end},
+    {t="slider",id="base_range",label="Base Range",min=0,max=175*M_PER_STUD,default=175*M_PER_STUD,suf="m",show=function() return cfg.base_on end},
+    {t="slider",id="base_text",label="Base Text Size",min=9,max=18,default=12,show=function() return cfg.base_on end},
   }},
   {name="Body Bags & Dropped", col=2, items={
     {t="toggle",id="bags_on",label="Enable Body Bags",color="c_bodybag"},
     {t="toggle",id="drop_on",label="Enable Dropped Items",color="c_dropped"},
-    {t="toggle",id="bd_dist",label="Show Distance"},
-    {t="slider",id="bd_range",label="Body Bags & Dropped Items Range",min=0,max=300*M_PER_STUD,default=300*M_PER_STUD,suf="m"},
-    {t="slider",id="bd_text",label="Bags & Dropped Items Text Size",min=9,max=18,default=12},
+    {t="toggle",id="bd_dist",label="Show Distance",show=function() return cfg.bags_on or cfg.drop_on end},
+    {t="slider",id="bd_range",label="Body Bags & Dropped Items Range",min=0,max=300*M_PER_STUD,default=300*M_PER_STUD,suf="m",show=function() return cfg.bags_on or cfg.drop_on end},
+    {t="slider",id="bd_text",label="Bags & Dropped Items Text Size",min=9,max=18,default=12,show=function() return cfg.bags_on or cfg.drop_on end},
   }},
   {name="Ore Nodes", col=2, items={
     {t="toggle",id="nodes_on",label="Enable Ore Nodes"},
-    {t="toggle",id="node_stone",label="Stone Nodes",color="c_nodestone"},
-    {t="toggle",id="node_sulfur",label="Sulfur Nodes",color="c_nodesulfur"},
-    {t="toggle",id="node_iron",label="Metal / Iron",color="c_nodeiron"},
-    {t="toggle",id="nodes_dist",label="Node Distance"},
-    {t="slider",id="nodes_range",label="Node Range",min=0,max=225*M_PER_STUD,default=225*M_PER_STUD,suf="m"},
-    {t="slider",id="nodes_text",label="Node Text Size",min=9,max=18,default=13},
+    {t="toggle",id="node_stone",label="Stone Nodes",color="c_nodestone",show=function() return cfg.nodes_on end},
+    {t="toggle",id="node_sulfur",label="Sulfur Nodes",color="c_nodesulfur",show=function() return cfg.nodes_on end},
+    {t="toggle",id="node_iron",label="Metal / Iron",color="c_nodeiron",show=function() return cfg.nodes_on end},
+    {t="toggle",id="nodes_dist",label="Node Distance",show=function() return cfg.nodes_on end},
+    {t="slider",id="nodes_range",label="Node Range",min=0,max=225*M_PER_STUD,default=225*M_PER_STUD,suf="m",show=function() return cfg.nodes_on end},
+    {t="slider",id="nodes_text",label="Node Text Size",min=9,max=18,default=13,show=function() return cfg.nodes_on end},
   }},
   {name="Pickups", col=1, items={
     {t="toggle",id="pick_on",label="Enable Pickups"},
-    {t="toggle",id="pick_ores",label="Loose Ores",color="c_pickores"},
-    {t="toggle",id="pick_wood",label="Wood Logs",color="c_pickwood"},
-    {t="toggle",id="pick_dist",label="Pickup Distance"},
-    {t="slider",id="pick_range",label="Pickup Range",min=0,max=75*M_PER_STUD,default=75*M_PER_STUD,suf="m"},
-    {t="slider",id="pick_text",label="Pickups Text Size",min=9,max=18,default=12},
+    {t="toggle",id="pick_ores",label="Loose Ores",color="c_pickores",show=function() return cfg.pick_on end},
+    {t="toggle",id="pick_wood",label="Wood Logs",color="c_pickwood",show=function() return cfg.pick_on end},
+    {t="toggle",id="pick_dist",label="Pickup Distance",show=function() return cfg.pick_on end},
+    {t="slider",id="pick_range",label="Pickup Range",min=0,max=75*M_PER_STUD,default=75*M_PER_STUD,suf="m",show=function() return cfg.pick_on end},
+    {t="slider",id="pick_text",label="Pickups Text Size",min=9,max=18,default=12,show=function() return cfg.pick_on end},
   }},
   {name="Food & Plants", col=2, items={
     {t="toggle",id="plants_on",label="Enable Food & Plants"},
-    {t="toggle",id="pick_hemp",label="Hemp",color="c_pickhemp"},
-    {t="toggle",id="pick_corn",label="Corn",color="c_pickcorn"},
-    {t="toggle",id="pick_pumpkin",label="Pumpkin",color="c_pickpumpkin"},
-    {t="toggle",id="pick_berry",label="Berries",color="c_pickberry"},
-    {t="toggle",id="pick_mushroom",label="Mushroom",color="c_pickmushroom"},
-    {t="toggle",id="pick_carrot",label="Carrot",color="c_pickcarrot"},
-    {t="toggle",id="pick_potato",label="Potato",color="c_pickpotato"},
-    {t="toggle",id="pick_apple",label="Apple",color="c_pickapple"},
-    {t="toggle",id="plants_dist",label="Show Distance"},
-    {t="slider",id="plants_range",label="Plants & Food Range",min=0,max=125*M_PER_STUD,default=125*M_PER_STUD,suf="m"},
-    {t="slider",id="plants_text",label="Plants & Food Text Size",min=9,max=18,default=12},
+    {t="toggle",id="pick_hemp",label="Hemp",color="c_pickhemp",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_corn",label="Corn",color="c_pickcorn",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_pumpkin",label="Pumpkin",color="c_pickpumpkin",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_berry",label="Berries",color="c_pickberry",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_mushroom",label="Mushroom",color="c_pickmushroom",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_carrot",label="Carrot",color="c_pickcarrot",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_potato",label="Potato",color="c_pickpotato",show=function() return cfg.plants_on end},
+    {t="toggle",id="pick_apple",label="Apple",color="c_pickapple",show=function() return cfg.plants_on end},
+    {t="toggle",id="plants_dist",label="Show Distance",show=function() return cfg.plants_on end},
+    {t="slider",id="plants_range",label="Plants & Food Range",min=0,max=125*M_PER_STUD,default=125*M_PER_STUD,suf="m",show=function() return cfg.plants_on end},
+    {t="slider",id="plants_text",label="Plants & Food Text Size",min=9,max=18,default=12,show=function() return cfg.plants_on end},
   }},
   {name="Vehicles", col=2, items={
     {t="toggle",id="veh_on",label="Enable Vehicles ESP"},
-    {t="toggle",id="veh_atv",label="ATVs",default=true,color="c_veh_atv"},
-    {t="toggle",id="veh_boats",label="Boats",default=true,color="c_veh_boat"},
-    {t="toggle",id="veh_heli",label="Minicopters",default=true,color="c_veh_heli"},
-    {t="toggle",id="veh_dist",label="Show Distance",default=true},
-    {t="slider",id="veh_range",label="Vehicle Range",min=0,max=1000*M_PER_STUD,default=1000*M_PER_STUD,suf="m"},
-    {t="slider",id="veh_text",label="Vehicles Text Size",min=9,max=18,default=12},
+    {t="toggle",id="veh_atv",label="ATVs",default=true,color="c_veh_atv",show=function() return cfg.veh_on end},
+    {t="toggle",id="veh_boats",label="Boats",default=true,color="c_veh_boat",show=function() return cfg.veh_on end},
+    {t="toggle",id="veh_heli",label="Minicopters",default=true,color="c_veh_heli",show=function() return cfg.veh_on end},
+    {t="toggle",id="veh_dist",label="Show Distance",default=true,show=function() return cfg.veh_on end},
+    {t="slider",id="veh_range",label="Vehicle Range",min=0,max=1000*M_PER_STUD,default=1000*M_PER_STUD,suf="m",show=function() return cfg.veh_on end},
+    {t="slider",id="veh_text",label="Vehicles Text Size",min=9,max=18,default=12,show=function() return cfg.veh_on end},
   }},
 }},
 {name="Features", groups={
   {name="Hitbox", col=1, items={
-    {t="toggle",id="hb_on",label="Player & NPC Head Hitbox Expander 1.3x",default=false},
+    {t="toggle",id="hb_on",label="Player & NPC Head Hitbox Expander 1.3x (high risk)",default=false},
     {t="toggle",id="hb_draw",label="Show Hitbox",default=false,color="c_hb",show=function() return cfg.hb_on end},
     {t="toggle",id="hb_chroma",label="Chroma Hitbox",default=false,show=function() return cfg.hb_on end},
   }},
   {name="Gun Mods", col=2, items={
     {t="toggle",id="gun_sgc",label="Weapon Patches"},
-    {t="toggle",id="gun_sgc_rate",label="Fire Rate",default=false,show=function() return cfg.gun_sgc end},
+    {t="toggle",id="gun_sgc_rate",label="Fire Rate (high risk)",default=false,show=function() return cfg.gun_sgc end},
     {t="slider",id="gun_sgc_rate_ms",label="Fire Interval",min=80,max=190,default=90,suf="ms",show=function() return cfg.gun_sgc and cfg.gun_sgc_rate end},
-    {t="toggle",id="gun_sgc_clean",label="Reduce Spread / Sway / Kick / Bloom / Shake",default=false,show=function() return cfg.gun_sgc end},
-    {t="button",id="gun_sgc_now",label="Re-apply Patches",_cb=function() sgc_force=sgc_force+1 end},
+    {t="toggle",id="gun_sgc_clean",label="No recoil / spread / sway / Bloom / Shake / kick (medium risk)",default=false,show=function() return cfg.gun_sgc end},
+    {t="button",id="gun_sgc_now",label="Re-apply Patches",_cb=function() sgc_force=sgc_force+1 end,show=function() return cfg.gun_sgc end},
   }},
 }},
 {name="Crosshair", groups={
   {name="Crosshair", col=1, items={
     {t="toggle",id="xh_on",label="Custom Crosshair"},
-    {t="combo",id="xh_style",label="Style",items={"Cross","Dot","Circle","T","Star of David"},default=1},
-    {t="slider",id="xh_size",label="Size",min=4,max=30,default=10},
-    {t="slider",id="xh_gap",label="Gap",min=0,max=16,default=4},
-    {t="slider",id="xh_thick",label="Thickness",min=1,max=5,default=2},
-    {t="toggle",id="xh_dot",label="Center Dot"},
-    {t="toggle",id="xh_spin",label="Spin"},
-    {t="slider",id="xh_speed",label="Spin Speed",min=-360,max=360,default=90,suf=" deg/s"},
-    {t="color",id="c_xh",label="Color"},
+    {t="combo",id="xh_style",label="Style",items={"Cross","Dot","Circle","T","Star of David","Hitler"},default=1,show=function() return cfg.xh_on end},
+    {t="slider",id="xh_size",label="Size",min=4,max=30,default=10,show=function() return cfg.xh_on end},
+    {t="slider",id="xh_gap",label="Gap",min=0,max=16,default=4,show=function() return cfg.xh_on end},
+    {t="slider",id="xh_thick",label="Thickness",min=1,max=5,default=2,show=function() return cfg.xh_on end},
+    {t="toggle",id="xh_dot",label="Center Dot",show=function() return cfg.xh_on end},
+    {t="toggle",id="xh_spin",label="Spin",show=function() return cfg.xh_on end},
+    {t="slider",id="xh_speed",label="Spin Speed",min=-360,max=360,default=90,suf=" deg/s",show=function() return cfg.xh_on and cfg.xh_spin end},
+    {t="toggle",id="xh_pulse",label="Pulse",default=false,show=function() return cfg.xh_on end},
+    {t="slider",id="xh_pulse_speed",label="Pulse Speed",min=20,max=300,default=100,suf=" BPM",show=function() return cfg.xh_on and cfg.xh_pulse end},
+    {t="toggle",id="xh_follow",label="Follow Target",default=false,show=function() return cfg.xh_on end},
+    {t="toggle",id="xh_chroma",label="Chroma",default=false,show=function() return cfg.xh_on end},
+    {t="color",id="c_xh",label="Color",show=function() return cfg.xh_on end},
   }},
 }},
 {name="Config", groups={
@@ -933,8 +939,104 @@ local PF={
   rdtxt={}, rdw={}, rct={1,1,1,1},
   -- team roster cache for esp_mate. Lives here rather than in a main-chunk
   -- local because the chunk is already at the 200-local limit.
-  team={ids={},next=0,tf=nil},
+  team={ids={},next=0,tf=nil,roster={},setup=false},
 }
+-- Team roster from the game's own TeamSync RemoteEvent. The FustTeamTags folder
+-- is a visual marker set: the game rebuilds it from the roster and only marks a
+-- part Live while that teammate is in range, so a tag can be missing for a real
+-- teammate. The roster event carries every online member, which is exactly what
+-- the game's own isTeammate test consults first. TeamAction op "sync" is the
+-- same request the team panel sends, so a client that loaded after the initial
+-- roster push can seed the list once instead of staying blind until the next
+-- team change.
+--
+-- Every lookup goes through child(): the NPC and world passes never call
+-- :FindFirstChild directly, because a wrapper that only supports snake_case or
+-- plain property indexing would silently answer nil and leave the roster empty.
+PF.team.child=function(o,n)
+  if not o then return nil end
+  local fn=o.FindFirstChild
+  if type(fn)=="function" then
+    local ok,v=pcall(fn,o,n)
+    if ok and v then return v end
+  end
+  fn=o.find_first_child
+  if type(fn)=="function" then
+    local ok,v=pcall(fn,o,n)
+    if ok and v then return v end
+  end
+  local ok,v=pcall(PF.get,o,n)
+  if ok and v then return v end
+  return nil
+end
+PF.team.sync=function()
+  local t=PF.team
+  t.setup=true
+  pcall(function()
+    local rs=nil
+    if game then
+      rs=game.ReplicatedStorage
+      if not rs and game.GetService then rs=game:GetService("ReplicatedStorage") end
+    end
+    if not rs then return end
+    local child=PF.team.child
+    -- child() only: this runs on the ESP frame, so nothing here may yield. The
+    -- game is fully loaded before the cheat is injected.
+    local fust=child(rs,"Fust")
+    if not fust then return end
+    local rem=child(fust,"Remotes")
+    if not rem then return end
+    local function take(msg,clear)
+      if type(msg)~="table" then return end
+      local team=msg.team
+      if type(team)~="table" then team=msg end
+      if type(team.members)~="table" then
+        -- a roster event with no team means the local player is not on one
+        if clear then t.roster={} end
+        return
+      end
+      local ids={}
+      for _,m in ipairs(team.members) do
+        if type(m)=="table" and type(m.userId)=="number" then ids[m.userId]=true end
+      end
+      t.roster=ids
+    end
+    local sync=child(rem,"TeamSync")
+    if sync then
+      local sig=sync.OnClientEvent
+      if not sig then sig=sync.on_client_event end
+      local fn=sig and sig.Connect
+      if type(fn)~="function" then fn=sig and sig.connect end
+      if type(fn)=="function" then
+        -- its own pcall: a wrapper that refuses Connect must not skip the seed
+        pcall(fn,sig,function(msg)
+          if type(msg)=="table" and msg.kind=="roster" then take(msg,true) end
+        end)
+      end
+    end
+    local act=child(rem,"TeamAction")
+    if act then
+      local inv=act.InvokeServer
+      if type(inv)~="function" then inv=act.invoke_server end
+      if type(inv)=="function" then
+        local function seed()
+          local okr,res=pcall(inv,act,{op="sync"})
+          if okr and type(res)=="table" then
+            -- TeamAction returns {roster=<team payload>}; accept both the
+            -- wrapped and unwrapped shapes.
+            take(type(res.roster)=="table" and res.roster or res,false)
+          end
+        end
+        local ok=pcall(function() task.spawn(seed) end)
+        if not ok then
+          -- no task library in this sandbox: fall back to a coroutine so the
+          -- invoke still happens without yielding the ESP frame
+          pcall(function() coroutine.wrap(seed)() end)
+        end
+      end
+    end
+  end)
+end
 -- Single-bone projection. player:GetBoneScreen(name) returns three plain
 -- scalars, so a pass that only wants one bone (the ESP head anchor) allocates
 -- nothing. The full skeleton goes through PF.bonesmemo below instead.
@@ -1001,6 +1103,9 @@ PF.pflag=function(p)
   if not e then
     local id=p.UserId
     if not id and p.Player then id=p.Player.UserId end
+    -- the team roster and tag names are numeric user ids, so normalise a
+    -- string-shaped id here once per frame instead of on every team test
+    id=tonumber(id) or id
     e={il=p.IsLocal and true or false, al=p.IsAlive, uid=id}
     c[p]=e
   end
@@ -1053,7 +1158,7 @@ PF.getview=function()
   if fx and fx*fx+fy*fy+fz*fz<1e-9 then fx,fy,fz=nil,nil,nil; lvv=nil end
   v.fx,v.fy,v.fz=fx,fy,fz
   -- the raw vectors are kept so the passes that need a Vector3 (the hitbox
-  -- silent-aim hook) reuse this one instead of rebuilding it
+  -- raycast redirect) reuse this one instead of rebuilding it
   v.cpv,v.lvv=cpv,lvv
   return v
 end
@@ -1157,14 +1262,13 @@ end)()
 PF.px,PF.py,PF.pok={},{},{}
 -- Team check. This place does not use Roblox's Teams service, so the cached
 -- Team/HasTeam fields are empty for everyone and a string compare never matches.
--- Fust's own team system is client-side: the FustTeam LocalScript tags every
--- online teammate with a Part named "Tag<userId>" under
--- workspace.CurrentCamera.FustTeamTags, and the game's own friendly test (in the
--- place source) is exactly that lookup. Reading the same folder keeps the aimbot
--- and the ESP in agreement with the game. The roster only changes when
--- someone joins or leaves a team, so the id set is cached and rebuilt every
--- PF.team.step calls: this runs once per player in four passes, and a
--- FindFirstChild per call showed up in the frame budget.
+-- Fust's team state arrives two ways, and the game's own isTeammate test reads
+-- both: the TeamSync RemoteEvent pushes a roster of every online member, and the
+-- FustTeam LocalScript mirrors that roster as "Tag<userId>" parts under
+-- workspace.CurrentCamera.FustTeamTags. The roster is authoritative; the tag
+-- folder is a visual marker set, so it is only the fallback. Both are cached and
+-- the folder is re-read once a second: this runs once per player in four passes,
+-- and a FindFirstChild per call showed up in the frame budget.
 local function esp_mate(p,lp)
   if not p then return false end
   -- UserId never changes for a session, so it comes from the per-frame player
@@ -1173,6 +1277,10 @@ local function esp_mate(p,lp)
   if not id then return false end
   if lp and lp.UserId==id then return true end
   local t=PF.team
+  -- Seed the TeamSync roster and start listening once. This is the authoritative
+  -- member list; the tag folder below only marks parts Live while in range.
+  if not t.setup then pcall(t.sync) end
+  if t.roster[id] then return true end
   -- Rebuild on a frame cadence, not a call count. This runs once per player in
   -- four passes, so a 60-call budget rebuilt the roster almost every frame; the
   -- closure and the per-tag substrings from that were steady garbage. The team
@@ -1187,24 +1295,54 @@ local function esp_mate(p,lp)
     -- cached Team field below is used instead.
     local tf
     pcall(function()
-      local cw=nil
-      if game and game.Workspace then cw=game.Workspace.CurrentCamera end
-      if not cw and workspace then cw=workspace.CurrentCamera end
-      tf=cw and cw:FindFirstChild("FustTeamTags")
-      if not tf then
-        local ws=nil
-        if game and game.Workspace then ws=game.Workspace end
-        if not ws and workspace then ws=workspace end
-        tf=ws and ws:FindFirstChild("FustTeamTags")
+      -- Same Workspace chain the NPC scanner and the world sweep use.
+      -- game.Workspace is not exposed on every build; when it came back nil
+      -- here the camera lookup failed, the tag roster was always empty, and
+      -- the Team Check matched nobody.
+      local ws
+      if game then
+        ws=game.Workspace or game.workspace
+        if not ws and game.GetService then ws=game:GetService("Workspace") end
       end
+      if not ws then ws=workspace end
+      if not ws then return end
+      -- Child lookup with the same fallbacks as the NPC and world passes: a
+      -- build may expose only snake_case methods, or only property indexing.
+      local child=PF.team.child
+      -- The game parents FustTeamTags to workspace.CurrentCamera (or workspace
+      -- when the camera is missing), and the camera instance is named "Camera".
+      local cw=nil
+      local okc,cv=pcall(PF.get,ws,"CurrentCamera")
+      if okc and cv then cw=cv end
+      if not cw then cw=child(ws,"Camera") end
+      tf=child(cw,"FustTeamTags")
+      if not tf then tf=child(ws,"FustTeamTags") end
       if tf then
-        local list=tf:GetChildren()
-        for _,ch in ipairs(list) do
-          local nm=ch and ch.Name
-          if nm and nm:sub(1,3)=="Tag" then
-            local uid=tonumber(nm:sub(4))
-            if uid then ids[uid]=true end
+        local list
+        local fn=tf.GetChildren
+        if type(fn)=="function" then
+          local ok,v=pcall(fn,tf)
+          if ok and type(v)=="table" then list=v end
+        end
+        if not list then
+          fn=tf.get_children
+          if type(fn)=="function" then
+            local ok,v=pcall(fn,tf)
+            if ok and type(v)=="table" then list=v end
           end
+        end
+        if list then
+          for _,ch in ipairs(list) do
+            local nm=ch and ch.Name
+            if nm and nm:sub(1,3)=="Tag" then
+              local uid=tonumber(nm:sub(4))
+              if uid then ids[uid]=true end
+            end
+          end
+        else
+          -- no enumerator on this build: the game's own friendly test is one
+          -- FindFirstChild, so do exactly that for the player being asked about
+          if child(tf,"Tag"..id) then ids[id]=true end
         end
       end
     end)
@@ -1339,10 +1477,11 @@ local function esp_player(p)
   local c_hat=col.c_hat or c_name
   local tsz=F.tsz
   local b
-  -- GetBounds is only worth a host call when something actually anchors to the
-  -- box. With Box and Health Bar both off the labels hang off the head bone,
-  -- which is read below anyway.
-  if cfg.esp_box or cfg.esp_hp then
+  -- GetBounds feeds every row that anchors to the rig: box, health bar, name,
+  -- distance, held item and tracer. It is read whenever one of those rows is
+  -- on, even with the box hidden, so all of them respect the player bounds.
+  if cfg.esp_box or cfg.esp_hp or cfg.esp_dist or cfg.esp_name
+    or cfg.esp_weapon or cfg.esp_tracer then
     local okb,bv=pcall(PF.bounds,p); if okb then b=bv end
   end
   local bx,by,bw,bh
@@ -1499,6 +1638,8 @@ local function esp_player(p)
     local tw=esp_tw(pname,tsz)
     draw.Text(cx-tw*0.5,name_y,pname,hue_or(ch,c_name,1),tsz)
   end
+  -- Every label anchors to the bounds now, so Name, Distance, Held item and
+  -- Tracer stay in the same place whether Box is on or off.
   local stack_y=by and (by+bh+3) or (anchor_y and anchor_y+4)
   if cfg.esp_dist and cx and stack_y then
     -- studs, which are the game's own metres: the same number the kill feed
@@ -2088,7 +2229,8 @@ end
 -- CROSSHAIR: custom crosshair.
 -- Every control in the Crosshair tab feeds this: style, size, gap, thickness,
 -- the centre dot, spin (angle is integrated from the frame delta, so the speed
--- slider means the same at 60 or 240 fps) and the colour swatch.
+-- slider means the same at 60 or 240 fps), pulse (a sine breathing on size and
+-- gap, also frame-delta based) and the colour swatch.
 -- =========================================================================
 local xh_ang=0
 -- Rotation scratch. The crosshair used to build a closure (plus an upvalue cell
@@ -2113,8 +2255,23 @@ end
 local function run_crosshair()
   if not cfg.xh_on then return end
   local sw,sh=scr(); local cx,cy=sw*0.5,sh*0.5
-  local s=cfg.xh_size; local gp=cfg.xh_gap; local th=cfg.xh_thick
-  local c=a(col.c_xh,1); local st=cfg.xh_style
+  -- Follow Target parks the crosshair on the bone the aim pass picked,
+  -- using the same world point as the target line. Falls back to screen centre
+  -- when there is no visible target, so it never sticks at a stale position.
+  if cfg.xh_follow and cfg.aim_on and XH_R.tv then cx,cy=XH_R.tx,XH_R.ty end
+  -- Pulse breathes the arms and the gap with a sine wave; thickness stays
+  -- fixed so the lines never shimmer. Speed is in beats per minute.
+  local pulse=1
+  if cfg.xh_pulse then
+    local ph=(XH_R.ph or 0)+(cfg.xh_pulse_speed or 100)/60*math.pi*2*_dt
+    ph=ph%(math.pi*2)
+    XH_R.ph=ph
+    pulse=1+0.35*math.sin(ph)
+  end
+  local s=(cfg.xh_size or 10)*pulse
+  local gp=(cfg.xh_gap or 4)*pulse
+  local th=cfg.xh_thick
+  local c=hue_or(cfg.xh_chroma and hsv((now()*0.12)%1,0.8,1) or nil,col.c_xh,1); local st=cfg.xh_style
   if cfg.xh_spin then
     xh_ang=(xh_ang+(cfg.xh_speed or 0)*math.pi/180*_dt)%(math.pi*2)
   end
@@ -2154,6 +2311,20 @@ local function run_crosshair()
     local l2x,l2y=R(cx-h,cy-r*0.5); local r2x,r2y=R(cx+h,cy-r*0.5)
     xh_poly({{ux,uy},{lx,ly},{rx2,ry2}}, c, th)
     xh_poly({{dx,dy},{l2x,l2y},{r2x,r2y}}, c, th)
+  elseif st==6 then
+    -- Hitler: one continuous plus, with a perpendicular hook on each
+    -- endpoint turning clockwise. gap pushes the whole shape out, size sets
+    -- the arm length from the centre.
+    local r=gp+s
+    local ax1,ay1=R(cx-r,cy);  local ax2,ay2=R(cx+r,cy)
+    local ax3,ay3=R(cx,cy-r);  local ax4,ay4=R(cx,cy+r)
+    draw.Line(ax1,ay1,ax2,ay2,c,th); draw.Line(ax3,ay3,ax4,ay4,c,th)
+    local h1x,h1y=R(cx-r,cy-r)
+    local h2x,h2y=R(cx+r,cy-r)
+    local h3x,h3y=R(cx+r,cy+r)
+    local h4x,h4y=R(cx-r,cy+r)
+    draw.Line(ax1,ay1,h1x,h1y,c,th); draw.Line(ax3,ay3,h2x,h2y,c,th)
+    draw.Line(ax2,ay2,h3x,h3y,c,th); draw.Line(ax4,ay4,h4x,h4y,c,th)
   end
   -- centre pip: thickness sets the base, size nudges it so the slider still
   -- reads even when only the dot is on
@@ -3410,26 +3581,19 @@ end
 -- ESP pass would draw that frame's markers against the previous camera.
 -- =========================================================================
 local aim_tgt=nil   -- head point the FOV currently holds
--- mouse aim: a straight 1/sm divisor on the screen-space
--- error (sm=1 is a hard snap), the deadzone latches until the head is well
+-- mouse aim: a straight 1/(1.5*sm+2) divisor on the screen-space
+-- error, the deadzone latches until the head is well
 -- clear, and the sub-pixel remainder is carried between frames.
 local aim_dz_state=0
 local aim_dz_tgt=nil
 local aim_rx,aim_ry=0,0
 local function aim_step(ex,ey,sm)
-  if sm<=1 then
-    local ax=math.abs(ex)
-    local ay=math.abs(ey)
-    if ax<0.6 and ay<0.6 then return ex*0.9, ey*0.9 end
-    return ex*0.8, ey*0.8
-  end
-  if sm<=10 then
-    return ex/sm, ey/sm
-  end
-  if sm<=25 then
-    return ex/(sm*0.9), ey/(sm*0.9)
-  end
-  return ex/(sm*0.8), ey/(sm*0.8)
+  -- Softer divisor across the whole 1-200 range: every value pulls less than
+  -- the old 1/sm curve, and the low end is tamed hardest. sm=1 used to snap
+  -- 80% of the error in one frame; it now pulls ~29%. The curve stays
+  -- monotonic, so a higher slider value is always gentler.
+  local d=sm*1.5+2
+  return ex/d, ey/d
 end
 -- MoveMouse truncates sub-pixel deltas, so carry the remainder
 local function aim_emit(fx,fy)
@@ -3633,11 +3797,47 @@ local function aim_try(hx,hy,hz,part,obj,name,health,char)
   local sx,sy,vis=draw.WorldToScreen(hx,hy,hz)
   if not vis then return end
   local dx,dy=sx-AIM_ST.cx,sy-AIM_ST.cy
-  if not aim_in_fov(dx,dy,AIM_ST.r,AIM_ST.fstyle) then return end
+  -- Strict FOV. A target that is not the one selected in the last few frames
+  -- must have its raw bone inside the FOV, which is normal acquisition: put
+  -- the crosshair on the player. The target that is already locked may also
+  -- be anchored by its prediction point, because that is where the crosshair
+  -- is actually going. The FOV itself is never widened.
+  local recent=AIM_ST.prevc~=nil and AIM_ST.prevc==char
+    and (FRAME-(AIM_ST.prevf or -1000))<=3
+  -- Sticky Aim: the target that was selected last frame stays selectable while
+  -- the key is held, even after the crosshair is dragged clean out of the FOV.
+  -- Range, wall and visibility checks below still apply, so a target that is
+  -- gone (dead, too far, behind a wall) still drops the lock.
+  local sticky=cfg.aim_sticky and AIM_ST.keyheld
+    and AIM_ST.prevc~=nil and AIM_ST.prevc==char
+  local tx,ty=dx,dy
+  -- The raw bone is the acquisition anchor. The prediction point is only an
+  -- ADDITIONAL anchor for the target that is already locked, never a
+  -- replacement: a bone that is inside the FOV must not be rejected just
+  -- because the lead point drifted outside it, which made the line blink.
+  local fovok=aim_in_fov(dx,dy,AIM_ST.r,AIM_ST.fstyle)
+  if recent and cfg.aim_wpred and AIM_ST.lockc~=nil and AIM_ST.lockc==char then
+    tx=dx+(AIM_ST.ldx or 0)
+    ty=dy+(AIM_ST.ldy or 0)
+    if not fovok then fovok=aim_in_fov(tx,ty,AIM_ST.r,AIM_ST.fstyle) end
+  end
+  -- Short release grace in time, not space: a target that was selected last
+  -- frame may miss the FOV test for a frame or two while the aim catches up.
+  -- It is kept for those frames, but prevf is not refreshed, so the grace
+  -- expires and the target still has to re-enter the real FOV.
+  if not fovok and not recent and not sticky then return end
   if cfg.aim_wall and camx then
     if not los_clear(camx,camy,camz,hx,hy,hz,char) then return end
   end
+  -- Score by whichever valid anchor is closer to the crosshair, so a centred
+  -- raw bone cannot lose to another target just because its lead point is far
+  -- out. For a prediction lock the crosshair is on the lead point, so that
+  -- anchor wins there anyway.
   local sd=dx*dx+dy*dy
+  if tx~=dx or ty~=dy then
+    local sd2=tx*tx+ty*ty
+    if sd2<sd then sd=sd2 end
+  end
   local score=sd
   if AIM_ST.style==2 then
     -- camera distance when we have it, otherwise the entity's own DistanceTo
@@ -3649,9 +3849,15 @@ local function aim_try(hx,hy,hz,part,obj,name,health,char)
   elseif AIM_ST.style==3 then
     score=health or 100
   end
+  -- A sticky lock outranks every fresh candidate, so the crosshair cannot be
+  -- pulled onto a different target while the lock is alive. The tiny relative
+  -- term keeps the target's own bones ranked against each other, so the
+  -- closest/selected bone still wins instead of the first one scanned.
+  if sticky then score=-1e9+score*0.000001 end
   if not AIM_ST.best_s or score<AIM_ST.best_s then
     AIM_ST.best_s=score
-    AIM_ST.best={x=hx,y=hy,z=hz,sx=sx,sy=sy,name=name,obj=obj,part=part,char=char}
+    AIM_ST.best={x=hx,y=hy,z=hz,sx=sx,sy=sy,name=name,obj=obj,part=part,char=char,
+      grace=(not fovok) or nil}
   end
 end
 
@@ -3733,7 +3939,8 @@ end
 -- read-back and the stock rate differs per weapon. Re-equip or rejoin.
 PF.sgc={force=0,mem={},memory=nil,memdone=false,done=false,hold=0,
   last_rate=false,last_clean=false,
-  rate_addrs=nil,rate_keys=nil,rate_ms=nil,rate_val=nil}
+  rate_addrs=nil,rate_keys=nil,rate_ms=nil,rate_val=nil,
+  state_addrs=nil,state_keys=nil,state_bound=false,state_tried=false}
 
 -- Names the clean toggle zeroes, as a lookup for the node walk. SGC_KEYS is the
 -- getgc query list and must contain every name here, plus "rate": getgc only
@@ -3744,10 +3951,26 @@ local SGC_Z={spread=0,adsSpread=0,moveSpread=0,sway=0,kickRoll=0,adsKick=0,
   shakeDur=0,kickPitch=0,kickBack=0,KICK_PITCH=0,KICK_BACK=0,SHAKE_MAX=0,
   MOVE_SPREAD=0,ADS_SPREAD=0,AIR_SPREAD=0,VISUAL_BLOOM=0,
   SWAY=0,SWAY_MAX=0,SWAY_ROT=0,SWAY_ROT_MAX=0}
+-- Recoil names folded into the clean toggle. RECOIL_CLIMB is the one that
+-- matters on builds that use it: camApply moves the pending recoil into the
+-- camera offset with
+--   k = 1 - exp(-dt * RECOIL_CLIMB)
+-- on both axes, so zeroing the constant makes that transfer 0 and the view
+-- never climbs - per weapon, per attachment, with no per-frame writes. The
+-- kick* names are the weapon model's own up/back/roll jolt. They overlap the
+-- SGC_Z set, so writing both is the same zero, not a double write.
+local SGC_R={RECOIL_CLIMB=0,RecoilClimb=0,kickPitch=0,kickBack=0,kickRoll=0,adsKick=0,
+  KICK_PITCH=0,KICK_BACK=0}
+-- Names that identify the live gun state table (the one camApply reads every
+-- frame). RecoilPend is unique to it, so matching that node proves the table.
+-- These are cached, not zeroed once: the render step zeroes them just before
+-- the camera step, which is the only place that matters.
+local SGC_STATE={RecoilPend=true,RecoilYawPend=true}
 local SGC_KEYS={"rate","spread","adsSpread","moveSpread","sway","kickRoll",
   "adsKick","shakeDur","kickPitch","kickBack","KICK_PITCH","KICK_BACK",
   "SHAKE_MAX","MOVE_SPREAD","ADS_SPREAD","AIR_SPREAD","VISUAL_BLOOM",
-  "SWAY","SWAY_MAX","SWAY_ROT","SWAY_ROT_MAX","MAX_CLIMB"}
+  "SWAY","SWAY_MAX","SWAY_ROT","SWAY_ROT_MAX","MAX_CLIMB","RECOIL_CLIMB",
+  "RecoilClimb","RecoilPend","RecoilYawPend"}
 
 -- Resolve the GC API. In the dumper getgc is a bare global, but this script can
 -- be loaded into an environment where it only lives on _G or on the executor's
@@ -3789,6 +4012,32 @@ end
 --   { fields = <name -> value map>, table = <address> }
 -- which is the whole reason the dump could patch them.
 -- ---------------------------------------------------------------------------
+-- Small shared helpers for the GC node walk. `gptr` reads a tagged pointer out
+-- of a node (table values and key slots are both pointers); `gident` pulls every
+-- identifier run out of a TString so a short key is not beaten by a longer run
+-- inside the string header.
+local function gptr(m,a)
+  local okp,v=pcall(m.Read,a,"ptr")
+  if okp and type(v)=="number" and v>65536 then return v end
+  return nil
+end
+local function gident(buf)
+  local out,cur={},nil
+  for i=1,#buf do
+    local c=buf:byte(i)
+    if (c>=48 and c<=57) or (c>=65 and c<=90)
+      or (c>=97 and c<=122) or c==95 then
+      cur=cur or {}
+      cur[#cur+1]=string.char(c)
+    elseif cur then
+      if #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
+      cur=nil
+    end
+  end
+  if cur and #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
+  return out
+end
+
 local function sgc_mem()
   local st=PF.sgc
   local mem=st.mem
@@ -3839,32 +4088,9 @@ local function sgc_mem()
     for _,v in pairs(nodes) do list[#list+1]=v end
   end
 
-  local function ptr(a)
-    local okp,v=pcall(m.Read,a,"ptr")
-    if okp and type(v)=="number" and v>65536 then return v end
-    return nil
-  end
-  -- every identifier run in a TString, so a short key is not beaten by a
-  -- longer run inside the string header
-  local function ident(buf)
-    local out,cur={},nil
-    for i=1,#buf do
-      local c=buf:byte(i)
-      if (c>=48 and c<=57) or (c>=65 and c<=90)
-        or (c>=97 and c<=122) or c==95 then
-        cur=cur or {}
-        cur[#cur+1]=string.char(c)
-      elseif cur then
-        if #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
-        cur=nil
-      end
-    end
-    if cur and #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
-    return out
-  end
-
   local wrote,tables=0,0
   local raddr,rkey={},{}
+  local state_np,state_n=nil,nil
   -- GunControl's u1.INPUT is a nested table, so it cannot be matched by the
   -- value gate below (its node holds a pointer, not a double). The camera
   -- recoil is  kick * mult294(), and mult294() is
@@ -3873,7 +4099,7 @@ local function sgc_mem()
   -- pitch/yaw exactly 0 while leaving the kick pattern and the recoil spring
   -- alone. Walking the inner table directly is the only way to reach them.
   local function zero_input(t)
-    local np2=ptr(t+24)
+    local np2=gptr(m,t+24)
     if not np2 then return end
     local okb2,b2=pcall(m.Read,t+1,"uint8")
     local n2=4
@@ -3882,11 +4108,11 @@ local function sgc_mem()
     end
     for k=0,n2-1 do
       local b2p=np2+k*32
-      local kp2=ptr(b2p+16)
+      local kp2=gptr(m,b2p+16)
       if kp2 then
         local okr2,buf2=pcall(m.ReadBuffer,kp2,48)
         if okr2 and type(buf2)=="string" and #buf2>=16 then
-          local runs2=ident(buf2)
+          local runs2=gident(buf2)
           for r2=1,#runs2 do
             local s2=runs2[r2]
             if s2=="Mouse" or s2=="Touch" or s2=="Gamepad" then
@@ -3909,23 +4135,31 @@ local function sgc_mem()
       local f=d.fields
       local addr=d.table
       if type(f)=="table" and type(addr)=="number" and addr>65536 then
-        local np=ptr(addr+24)
+        local np=gptr(m,addr+24)
         if np then
           tables=tables+1
           local okb,b=pcall(m.Read,addr+1,"uint8")
+          -- table+1 is log2(node count) on this build (gc.txt: "node count
+          -- byte: table+1 - walks stop at the real end"), so 2^b is the exact
+          -- array length and the walk cannot overrun. 7 covers the 125-key
+          -- tuning table, but a table with more keys needs 256 or 512, so the
+          -- cap goes to 9 instead of silently truncating at 128. A byte
+          -- outside 0..9 is not a node count, so the walk keeps the old
+          -- bounded 64-node guess.
           local n=64
-          if okb and type(b)=="number" and b>=0 and b<=7 then n=2^b end
+          if okb and type(b)=="number" and b>=0 and b<=9 then n=2^b end
           for j=0,n-1 do
             local base=np+j*32
-            local kp=ptr(base+16)
+            local kp=gptr(m,base+16)
             if kp then
               local okr,buf=pcall(m.ReadBuffer,kp,64)
               if okr and type(buf)=="string" and #buf>=16 then
-                local runs=ident(buf)
+                local runs=gident(buf)
                 local nm=nil
                 for r=1,#runs do
                   local s=runs[r]
-                  if f[s]~=nil and (s=="rate" or SGC_Z[s]~=nil) then
+                  if f[s]~=nil and (s=="rate" or SGC_Z[s]~=nil or SGC_R[s]~=nil
+                    or SGC_STATE[s]) then
                     local okv,v=pcall(m.Read,base,"double")
                     local want=f[s]
                     if okv and type(v)=="number" and type(want)=="number"
@@ -3941,8 +4175,25 @@ local function sgc_mem()
                 if not nm and clean_on and f["MAX_CLIMB"]~=nil then
                   for r=1,#runs do
                     if runs[r]=="INPUT" then
-                      local it=ptr(base)
+                      local it=gptr(m,base)
                       if it then zero_input(it) end
+                      break
+                    end
+                  end
+                end
+                -- The live gun controller is identified by its own long,
+                -- unique field names, NOT by a value match: RecoilPend is nil
+                -- at rest (gc.txt 2554 lists RecoilYawPend but not RecoilPend),
+                -- so a value-gated test misses the table until the moment a
+                -- shot is fired. Name-only matching is stable and the names
+                -- used here (8+ chars, numeric-suffixed) cannot collide.
+                if not state_np then
+                  for r=1,#runs do
+                    local s=runs[r]
+                    if s=="RecoilYawPend" or s=="RecoilPend" or s=="ReloadCF"
+                      or s=="Ammo296" or s=="Sent88" then
+                      state_np=np
+                      state_n=n
                       break
                     end
                   end
@@ -3956,7 +4207,8 @@ local function sgc_mem()
                   if rate_on and pcall(m.Write,base,"double",ratev) then
                     wrote=wrote+1
                   end
-                elseif nm and clean_on and f[nm]~=0 then
+                elseif nm and f[nm]~=0 and clean_on
+                  and (SGC_Z[nm]~=nil or SGC_R[nm]~=nil) then
                   if pcall(m.Write,base,"double",0) then wrote=wrote+1 end
                 end
               end
@@ -3965,6 +4217,42 @@ local function sgc_mem()
         end
       end
     end
+  end
+  -- Cache the live gun state nodes. RecoilPend / RecoilYawPend feed the camera
+  -- offset, recoil / recoilYaw are what camApply actually rotates by, and the
+  -- three kick values are the viewmodel jolt. Zeroing all of them at the
+  -- camera render step kills the climb even when the tuning constant cannot be
+  -- reached, and keeps the gun model still. The controller table resolves 97
+  -- keys, so 128 nodes is its real array even if the header byte could not be
+  -- read.
+  if state_np then
+    local sn=state_n
+    if not sn or sn<128 then sn=128 end
+    local sa,sk={},{}
+    for j=0,sn-1 do
+      local base=state_np+j*32
+      local kp=gptr(m,base+16)
+      if kp then
+        local okr,buf=pcall(m.ReadBuffer,kp,48)
+        if okr and type(buf)=="string" and #buf>=16 then
+          local runs=gident(buf)
+          for r=1,#runs do
+            local s=runs[r]
+            if s=="recoil" or s=="recoilYaw" or s=="RecoilPend" or s=="RecoilYawPend"
+              or s=="kickPitch" or s=="kickBack" or s=="kickRoll" then
+              sa[#sa+1]=base
+              sk[#sk+1]=kp
+              break
+            end
+          end
+        end
+      end
+    end
+    st.state_addrs=sa
+    st.state_keys=sk
+  else
+    st.state_addrs=nil
+    st.state_keys=nil
   end
   mem.ok=(wrote>0)
   mem.wrote=wrote
@@ -4019,13 +4307,14 @@ local function setgc_apply()
   -- there is no read-back to restore, so a scan would only cost a second.
   --
   -- The old code keyed this on "has a scan ever run", which meant enabling
-  -- Reduce Spread / Sway / Kick / Bloom / Shake after Fire Rate had already
-  -- scanned did nothing until Re-apply was pressed. The two enable edges are
-  -- tracked instead, so every toggle gets its own single pass.
+  -- Reduce Spread / Sway / Kick / Bloom / Shake (now No Spread...) after Fire
+  -- Rate had already scanned did nothing until Re-apply was pressed. The two
+  -- enable edges are tracked instead, so every toggle gets its own single pass.
   -- Fire Rate only needs a scan the first time, to find the rate nodes; after
   -- that the slider fast path above writes them directly, so enabling it again
-  -- must not cost another second. Reduce Spread / Sway / Kick / Bloom / Shake
-  -- always needs the walk, because that is the only place its names are zeroed.
+  -- must not cost another second. The merged clean toggle (No Spread / Sway /
+  -- Kick / Bloom / Shake / Recoil) always needs the walk, because that is the
+  -- only place those names are zeroed.
   local added=(clean_on and not st.last_clean)
     or (rate_on and not st.last_rate and not st.rate_addrs)
   st.last_rate=rate_on
@@ -4050,6 +4339,59 @@ local function setgc_apply()
     st.memdone=true
     pcall(sgc_mem)
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- Live recoil state kill.
+--
+-- Zeroing the tuning constant is not enough on every build. The live gun
+-- controller exposes its state as a GC table (RecoilPend / RecoilYawPend /
+-- recoil / recoilYaw), and the camera step rotates the view by recoil /
+-- recoilYaw. Zeroing those four nodes at RenderPriority.Camera - camUndo is
+-- bound one step lower and camApply one step higher - means the camera step
+-- always reads zero, so no climb can be applied no matter which constant the
+-- build uses.
+--
+-- sgc_mem caches the node addresses once; every write re-checks the node's key
+-- pointer, so a table that was freed or moved cannot be written through a
+-- stale address.
+local function sgc_state()
+  local st=PF.sgc
+  -- gated by the merged clean toggle
+  -- (No Spread / Sway / Kick / Bloom / Shake / Recoil)
+  if not (cfg.gun_sgc and cfg.gun_sgc_clean) then return end
+  local a=st.state_addrs
+  if not a then return end
+  local m=st.memory
+  if not m then return end
+  local k=st.state_keys
+  for i=1,#a do
+    -- read first: at rest every node is already 0, so the normal path is one
+    -- read per node and no key-pointer check or write at all
+    local okv,v=pcall(m.Read,a[i],"double")
+    if okv and type(v)=="number" and v~=0 then
+      local okp,p=pcall(m.Read,a[i]+16,"ptr")
+      if okp and p==k[i] then
+        pcall(m.Write,a[i],"double",0)
+      end
+    end
+  end
+end
+
+local function sgc_state_bind()
+  local st=PF.sgc
+  if st.state_bound then return true end
+  if st.state_tried then return false end
+  st.state_tried=true
+  local ok,rs=pcall(function() return game:GetService("RunService") end)
+  if not ok or rs==nil then return false end
+  local fn=rs.BindToRenderStep
+  if type(fn)~="function" then return false end
+  local pri=200
+  pcall(function() pri=Enum.RenderPriority.Camera.Value end)
+  local okb=pcall(fn,rs,"EgoNoRecoil",pri,sgc_state)
+  if okb then st.state_bound=true end
+  return okb
 end
 
 -- ---------------------------------------------------------------------------
@@ -4276,7 +4618,7 @@ local npc_sweep_active=false
 local npc_sweep_id=0
 
 -- Head hitbox expander, for players and NPCs. The visible Head part is never
--- resized: instead the Vector raycast silent-aim hook is fed a target every
+-- resized: instead the Vector raycast redirect hook is fed a target every
 -- frame, and any head whose centre lies within the fixed 130% radius of the aim
 -- ray is treated as hit. 130% is the largest radius that still registers - above
 -- roughly 132% the server stops accepting the redirected hit - so the radius is
@@ -4289,8 +4631,8 @@ local npc_sweep_id=0
 -- and aim passes use; that sweep is kept warm by cfg.hb_on, so the expander
 -- works on NPCs without NPC ESP or Target NPC being enabled.
 local HB_ST={hook=false,col={0.45,0.78,1,0.8}}
--- Enable/disable the silent hook once per state change. Kept on HB_ST so the
--- pass adds no extra main-chunk local.
+-- Enable/disable the raycast redirect once per state change. Kept on HB_ST so
+-- the pass adds no extra main-chunk local.
 HB_ST.hook_set=function(on)
   if HB_ST.hook==on then return end
   local rc=raycast
@@ -4316,31 +4658,42 @@ local function run_hitbox()
   end
   local vw=PF.getview()
   local lp=vw.lp
+  -- The game fires from eyeOrigin(camera.Position + LookVector * MUZZLE), with
+  -- MUZZLE = 1, so the redirect has to start where that Fire payload starts.
+  -- The head sits a couple of studs off that point in third person, and a shot
+  -- whose origin does not match the camera can be treated as a bad shot origin
+  -- and rejected even though the local ray reached the head. Head is the
+  -- fallback.
   local origin
-  if lp then
+  local look=vw.lvv
+  local cp=vw.cpv
+  if cp and look then
+    local vn=Vector3 and Vector3.New
+    local opx,opy,opz=cp.X or cp.x,cp.Y or cp.y,cp.Z or cp.z
+    local olx,oly,olz=look.X or look.x,look.Y or look.y,look.Z or look.z
+    if vn and opx and olx then origin=vn(opx+olx,opy+oly,opz+olz) else origin=cp end
+  end
+  if not origin and lp then
     local okh,h=pcall(PF.head,lp)
     if okh then origin=h end
   end
   if not origin then origin=vw.cpv end
-  local look=vw.lvv
   local rc=raycast
   if not (origin and look and rc and rc.SetSilentTarget) then
     HB_ST.hook_set(false)
     return
   end
   HB_ST.hook_set(true)
-  -- Ring depth has to be measured from the camera, not from the local head. The
-  -- third-person camera sits a couple of studs behind and above the head, so a
-  -- target off to the side of the screen got a much shallower depth than its
+  -- Ring depth is still measured from the camera, not from the redirect origin.
+  -- The third-person camera sits a couple of studs behind and above the head, so
+  -- a target off to the side of the screen got a much shallower depth than its
   -- real camera distance, and the ring radius (which is inverse depth) blew up.
-  -- The silent-aim origin stays the head: SetSilentTarget and the visibility
-  -- test below still use it, they are about aim, not about drawing.
   local eye=vw.cpv or origin
   -- look vector components, read once: the per-target depth and offset tests
   -- below are plain arithmetic on these instead of Vector3 subtract / Dot / #
   -- calls, which allocated three temporary vectors per candidate per frame
   local lkx,lky,lkz=look.X or look.x or 0,look.Y or look.y or 0,look.Z or look.z or 0
-  -- Two separate reaches. The silent-aim redirect itself keeps its old bounds -
+  -- Two separate reaches. The raycast redirect itself keeps its old bounds -
   -- Aimbot Range for players, NPC Range for NPCs - so widening or narrowing the
   -- ESP rows never changes what the expander can actually grab. Only the rings
   -- are gated by the ESP rows: Player Range for players, NPC Range for NPCs, so
@@ -5075,7 +5428,7 @@ local function run_npc_esp_h()
             -- is what keeps a near-plane bone from blowing the rect up.
             local box_x,box_y,box_w,box_h
             if cfg.npc_box or cfg.npcs_show_health or cfg.npcs_show_name or cfg.npcs_show_dist
-              or cfg.npc_headdot or n.is_heli then
+              or cfg.npc_tag or cfg.npc_headdot or n.is_heli then
               local expect=(pps>0.05 and pps*5.6) or 0
               local hh2=0
               if n.is_heli then
@@ -5297,6 +5650,15 @@ local function run_gunmods()
   -- weapon-stat patches: one GC scan, then memory writes only. Applies once
   -- (after a short settle) or on the Re-apply button - never on a timer.
   pcall(setgc_apply)
+  -- No Recoil keeps the live recoil state at zero. The render-step binding is
+  -- created once; if the executor will not bind it, the same function runs
+  -- from OnFrame instead. Calling it here as well means a camera step at any
+  -- priority is covered: this pass runs first, the priority-200 pass runs just
+  -- before the game's camera step. The callback is a no-op while the toggle is
+  -- off, so leaving it bound is free.
+  local st=PF.sgc
+  if not st.state_bound then pcall(sgc_state_bind) end
+  pcall(sgc_state)
 end
 
 -- One player's candidate scan. This used to be an inline closure built inside
@@ -5323,6 +5685,19 @@ local function aim_player(p,lp)
   end
   local cx,cy=AIM_ST.cx,AIM_ST.cy
   local r,fstyle=AIM_ST.r,AIM_ST.fstyle
+  -- Same rule as aim_try: raw bone for acquisition, prediction point only for
+  -- the target that is already locked. The FOV is never widened. While the
+  -- short release grace is active the pre-filter is bypassed so aim_try can
+  -- apply the grace to every bone instead of dropping the player here.
+  local recent=AIM_ST.prevc~=nil and AIM_ST.prevc==char
+    and (FRAME-(AIM_ST.prevf or -1000))<=3
+  local sticky=cfg.aim_sticky and AIM_ST.keyheld
+    and AIM_ST.prevc~=nil and AIM_ST.prevc==char
+  local lockox,lockoy=0,0
+  if recent and cfg.aim_wpred and AIM_ST.lockc~=nil and AIM_ST.lockc==char then
+    lockox=AIM_ST.ldx or 0
+    lockoy=AIM_ST.ldy or 0
+  end
   local aimbone=cfg.aim_bone or 1
   local blist=PF.aimset[aimbone] or AIM_BONES
   if aimbone==8 then
@@ -5340,7 +5715,15 @@ local function aim_player(p,lp)
       local b=bs[blist[bi]]
       if b and b[1] and b[2] then
         any=true
-        if aim_in_fov(b[1]-cx,b[2]-cy,r,fstyle) then
+        local bdx,bdy=b[1]-cx,b[2]-cy
+        -- Same anchors as aim_try: raw bone first, then the prediction point
+        -- for the locked target, and a recent target is let through so the
+        -- time grace inside aim_try can apply to its bones.
+        local okb=recent or sticky or aim_in_fov(bdx,bdy,r,fstyle)
+        if not okb and (lockox~=0 or lockoy~=0) then
+          okb=aim_in_fov(bdx+lockox,bdy+lockoy,r,fstyle)
+        end
+        if okb then
           local okf,pr=pcall(PF.find,char,blist[bi])
           if okf and pr then
             local okp,pp=pcall(PF.pos,pr)
@@ -5382,24 +5765,41 @@ local function aim_player(p,lp)
 end
 local function run_aim()
   aim_tgt=nil
-  -- mouse aim only: the aimbot always moves the cursor, it never turns the
-  -- camera, so there is no type switch to read.
-  if not cfg.aim_on then return end
+  if not cfg.aim_on then
+    AIM_ST.lockc=nil
+    AIM_ST.ldx,AIM_ST.ldy=nil,nil
+    AIM_ST.prevc=nil
+    AIM_ST.prevf=nil
+    AIM_ST.keyheld=false
+    return
+  end
+  -- The aim key is sampled before the target scan because Sticky Aim needs to
+  -- know whether the lock is engaged while the candidates are scored. The aim
+  -- step at the bottom reuses this same value.
+  local key=bind.aim_key or 0
+  local held=(key~=0) and not ui.capture and ekey(key) or false
+  AIM_ST.keyheld=held
+  -- A released key ends the lock. Without this a stale target could be
+  -- re-stuck by the next key press from anywhere on the screen.
+  if not held then
+    AIM_ST.prevc=nil
+    AIM_ST.prevf=nil
+  end
   local vw=PF.getview()
   local lp=vw.lp
   local players=PF.players()
   if not players then return end
   local cx,cy=aim_center()
-  local r=cfg.aim_fov or 160
+  local r=clamp(cfg.aim_fov or 160,20,500)
   local style=cfg.aim_priority or 1
   local fstyle=cfg.aim_fovstyle or 1
   -- the range row is metres; every cull below, and AIM_ST.maxdist, works in studs
   local maxdist=(cfg.aim_range or 1500)/PF.m
   -- Held-weapon lookup, re-run only on a swap. It sits above the range cull so
-  -- the Bow Lead & Drop cap always sees the bow that is actually in your hands rather
-  -- than last frame's, and the lead pass at the bottom of this function reuses
-  -- the cached speed, gravity and bow numbers instead of reading them twice.
-  if cfg.aim_pred or cfg.aim_bowdrop then
+  -- the bow cap always sees the bow that is actually in your hands rather than
+  -- last frame's, and the lead pass at the bottom of this function reuses the
+  -- cached speed, gravity and bow numbers instead of reading them twice.
+  if cfg.aim_wpred then
     local tname=""
     local okt,tv=pcall(PF.tool,lp)
     if okt and type(tv)=="string" then tname=tv end
@@ -5441,11 +5841,11 @@ local function run_aim()
       AIM_ST.gspeed=sp; AIM_ST.ggrav=gr; AIM_ST.gbow=bw
     end
   end
-  -- Bow lead & drop holds up out to 300 game metres, so the aim range is capped while
+  -- Bow prediction holds up out to 300 game metres, so the aim range is capped while
   -- an arrow is what is actually being compensated. Every range in this function
   -- is already in studs and the game counts one stud as one metre, so the cap is
   -- a plain 300 - the same unit the distance labels print.
-  if cfg.aim_bowdrop and AIM_ST.gbow and maxdist>300 then maxdist=300 end
+  if cfg.aim_wpred and AIM_ST.gbow and maxdist>300 then maxdist=300 end
   local camx,camy,camz=vw.cx,vw.cy,vw.cz
   -- Aim pass: players first, then NPCs below. Scoring lives in aim_try, and the
   -- per-player scan lives in aim_player, so this loop allocates nothing at all
@@ -5474,7 +5874,11 @@ local function run_aim()
   -- on the crosshair, and skipped entirely when "Target Players over NPC & Heli"
   -- is on and a player is already in the FOV, so an NPC can never steal a shot
   -- from a visible player.
-  if cfg.aim_npc and best_s~=0 and not (cfg.aim_pp and best~=nil) then
+  -- A sticky lock outranks the player-priority shortcut, so the pass still
+  -- runs and the locked NPC can keep winning with its sticky score.
+  if cfg.aim_npc and best_s~=0
+    and not (cfg.aim_pp and best~=nil
+      and not (cfg.aim_sticky and AIM_ST.keyheld and AIM_ST.prevc~=nil)) then
     local list=cache_npcs or NPC_LIST
     -- NPCs are only engaged inside the NPC ESP Range row, so the aimbot
     -- can never lock onto a rig the NPC ESP is hiding. The aimbot range still
@@ -5528,7 +5932,9 @@ local function run_aim()
   -- "Target Players over NPC & Heli" row applies to it exactly like an NPC, so it
   -- can never steal a shot from a player already under the crosshair. It sits
   -- outside the Target NPC block so the heli can be aimed at on its own.
-  if cfg.aim_heli and best_s~=0 and not (cfg.aim_pp and best~=nil) then
+  if cfg.aim_heli and best_s~=0
+    and not (cfg.aim_pp and best~=nil
+      and not (cfg.aim_sticky and AIM_ST.keyheld and AIM_ST.prevc~=nil)) then
     local h=NPC_HELI
     if h and h.inst and h.root then
       local hl=1000/PF.m
@@ -5539,7 +5945,7 @@ local function run_aim()
       best=AIM_ST.best; best_s=AIM_ST.best_s
     end
   end
-  -- Auto gun lead + bow lead & drop.
+  -- Auto weapon predict: gun lead + bow lead & drop.
   -- The held tool is read on every swap, so the speed, fall rate and class used
   -- below always match what is in your hands. Nothing here is a setting: the
   -- prediction for the weapon you are holding is picked from that weapon's own
@@ -5552,16 +5958,15 @@ local function run_aim()
   -- crosshair consistently behind a strafing target, so the lag term is gone and
   -- the lead is the plain v * tof projection the bow already used.
   -- Melee and utility tools get nothing, and neither does an empty hand.
-  if cfg.aim_pred or cfg.aim_bowdrop then
+  if cfg.aim_wpred then
     -- Arrow speed is pinned to a full draw. Scaling it by the live draw charge
     -- made the drop compensation explode on a half-drawn arrow and yank the
     -- view upward during and right after the shot, so the aim point uses the
     -- top speed the bow can reach and stays put.
     local sp=AIM_ST.gspeed or 0
     local gbow=AIM_ST.gbow
-    -- a gun is only predicted while Auto Gun Lead is on; an arrow is predicted
-    -- whenever either helper is on, so turning one off cannot break the bow
-    if sp>0 and best and camx and (gbow or cfg.aim_pred) then
+    -- both guns and arrows are predicted while the one toggle is on
+    if sp>0 and best and camx then
       local dx0=best.x-camx; local dy0=best.y-camy; local dz0=best.z-camz
       local dist=math.sqrt(dx0*dx0+dy0*dy0+dz0*dz0)
       -- Target travel. The live root velocity is exact and carries none of the
@@ -5634,32 +6039,45 @@ local function run_aim()
       az=az+lz
       local grav=AIM_ST.ggrav or 8
       if gbow then
-        -- arrows: Bow Lead & Drop owns the holdover. Across the 300 game metre cap the
-        -- longest flight is ~1.4 s (hunting bow), so the clamp only guards
-        -- against a bad gravity read - it never shortens a real shot.
-        if cfg.aim_bowdrop then
-          local lift=0.5*grav*tof*tof
-          if lift>400 then lift=400 end
-          ay=ay+lift
-        end
-      elseif cfg.aim_pred then
+        -- arrows: the holdover across the 300 game metre cap. The longest
+        -- flight is ~1.4 s (hunting bow), so the clamp only guards against a
+        -- bad gravity read - it never shortens a real shot.
+        local lift=0.5*grav*tof*tof
+        if lift>400 then lift=400 end
+        ay=ay+lift
+      else
         -- bullets: the drop is real over the whole flight, but a few studs at
         -- sniper range, so the cap sits well under a body
         local lift=0.5*grav*tof*tof
         if lift>40 then lift=40 end
         ay=ay+lift
       end
+      best.ax,best.ay,best.az=ax,ay,az
+      -- Keep the raw bone screen point, then swap in the predicted one. The
+      -- difference is the lead offset in screen space; aim_try adds it back
+      -- next frame so a small FOV keeps this target locked instead of
+      -- rejecting the raw bone once the crosshair sits on the lead point.
+      local rsx,rsy=best.sx,best.sy
+      local psx,psy=rsx,rsy
       if ax~=best.x or ay~=best.y or az~=best.z then
         local asx,asy,av=draw.WorldToScreen(ax,ay,az)
         if av then
           -- the crosshair is pulled to the predicted screen point; x/y/z keep
           -- the raw bone so the target line still ends on the bone
-          best.sx,best.sy=asx,asy
+          psx,psy=asx,asy
         end
       end
+      best.sx,best.sy=psx,psy
+      AIM_ST.lockc=best.char
+      AIM_ST.ldx=psx-rsx
+      AIM_ST.ldy=psy-rsy
     else
-      -- no target, or a melee/empty hand: drop the sample so the next engage
-      -- does not compute a lead from a stale point
+      -- no target, or a melee/empty hand: drop the velocity/lead sample so the
+      -- next engage does not compute a lead from a stale point. The locked
+      -- character and its last lead offset are kept on purpose: one frame with
+      -- no passing bone (a noisy wall ray, a projection at the FOV edge) must
+      -- not throw the lock away, because the crosshair is already sitting on
+      -- the lead point and the raw bone can be outside a small FOV.
       AIM_ST.px=nil
       AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
       AIM_ST.lchar=nil
@@ -5670,17 +6088,26 @@ local function run_aim()
     AIM_ST.px=nil
     AIM_ST.lx,AIM_ST.ly,AIM_ST.lz=nil,nil,nil
     AIM_ST.lchar=nil
+    AIM_ST.lockc=nil
+    AIM_ST.ldx,AIM_ST.ldy=nil,nil
     AIM_ST.gname=nil
   end
   aim_tgt=best
-  local key=bind.aim_key or 0
-  local held=(key~=0) and not ui.capture and ekey(key) or false
+  -- Remember the last target and when it was selected. The prediction-point
+  -- retention only applies for a few frames after a selection, so a target
+  -- that is no longer held has to re-enter the real FOV like any other target.
+  if best then
+    AIM_ST.prevc=best.char
+    -- do not refresh the grace clock when this frame was only kept alive by
+    -- the grace, or it would never expire
+    if not best.grace then AIM_ST.prevf=FRAME end
+  end
   local engaged=(held and best~=nil) or false
-  local dz=cfg.aim_dz or 0
   if not engaged then
     aim_dz_state=0
     return
   end
+  local dz=cfg.aim_dz or 0
   local sm=math.floor(cfg.aim_smooth or 1)
   if sm<1 then sm=1 end
   local ex,ey=best.sx-cx,best.sy-cy
@@ -5704,7 +6131,7 @@ end
 local function draw_aim()
   if not cfg.aim_on then return end
   local sw,sh=scr(); local cx,cy=sw*0.5,sh*0.5
-  local r=cfg.aim_fov or 160
+  local r=clamp(cfg.aim_fov or 160,20,500)
   local hue=(now()*0.12)%1
   local chroma=cfg.aim_fovchroma
   if cfg.aim_fovcircle then
@@ -5726,51 +6153,48 @@ local function draw_aim()
       draw.Line(cx+r,cy+r,cx+r-k,cy+r,c,1.2); draw.Line(cx+r,cy+r,cx+r,cy+r-k,c,1.2)
     end
   end
-  -- active-state tag under the FOV region, so it is obvious which prediction
-  -- helpers are running. Bow Lead & Drop is appended to the right of Auto Gun
-  -- Lead, clamped to the screen so a huge FOV cannot push it off the bottom edge.
-  local lbl=nil
-  if cfg.aim_pred then lbl="(Auto Gun Lead)" end
-  if cfg.aim_bowdrop then
-    if lbl then lbl=lbl.." (Bow Lead & Drop)" else lbl="(Bow Lead & Drop)" end
-  end
-  if lbl then
-    local lw=0
-    if draw.GetTextSize then lw=draw.GetTextSize(lbl,12) or 0 end
-    local ly=cy+r+8
-    if ly>sh-14 then ly=sh-14 end
+  -- Active-state tags under the FOV region, so it is obvious when weapon
+  -- prediction and/or sticky aim is running. Both share the size slider and
+  -- stack when both are on, clamped so a huge FOV cannot push them off screen.
+  local ts=cfg.aim_wpred_tsize or 12
+  local nl=0
+  if cfg.aim_wpred then nl=nl+1 end
+  if cfg.aim_sticky then nl=nl+1 end
+  if nl>0 then
     local lc=hue_or(chroma and hsv(hue,0.8,1) or nil,col.c_fov or {0.45,0.78,1,1},1)
-    draw.Text(cx-lw*0.5,ly,lbl,lc,12)
-  end
-  if cfg.aim_tline and aim_tgt then
-    local tx,ty,tz=aim_tgt.x,aim_tgt.y,aim_tgt.z
-    if aim_tgt.part and aim_tgt.part.Position then
-      local pp=aim_tgt.part.Position
-      tx,ty,tz=pp.X,pp.Y,pp.Z
-    elseif aim_tgt.obj then
-      local p=aim_tgt.obj
-      local part=nil
-      local aimbone=cfg.aim_bone or 1
-      local blist=PF.aimset[aimbone] or AIM_BONES
-      local char=nil
-      local okc,cv=pcall(PF.char,p)
-      if okc then char=cv end
-      if char then
-        for bi=1,#blist do
-          local okf,pr=pcall(PF.find,char,blist[bi])
-          if okf and pr then
-            local okp,pp=pcall(PF.pos,pr)
-            if okp and pp then part=pr; tx,ty,tz=pp.X,pp.Y,pp.Z; break end
-          end
-        end
-      end
+    local total=ts*nl+4*(nl-1)
+    local ly=cy+r+8
+    if ly+total>sh-14 then ly=sh-14-total end
+    if cfg.aim_wpred then
+      local lbl="(Auto Weapon Predict)"
+      local lw=0
+      if draw.GetTextSize then lw=draw.GetTextSize(lbl,ts) or 0 end
+      draw.Text(cx-lw*0.5,ly,lbl,lc,ts)
+      ly=ly+ts+4
     end
-    local sx,sy,vis=draw.WorldToScreen(tx,ty,tz)
-    if vis then
+    if cfg.aim_sticky then
+      local lbl="(Sticky Aim)"
+      local lw=0
+      if draw.GetTextSize then lw=draw.GetTextSize(lbl,ts) or 0 end
+      draw.Text(cx-lw*0.5,ly,lbl,lc,ts)
+    end
+  end
+  if aim_tgt then
+    -- Always draw straight to the selected bone. No FOV clipping, no lock
+    -- state, no prediction-point swap: the line simply shows which bone the
+    -- aim pass picked this frame.
+    local sx,sy,vis=draw.WorldToScreen(aim_tgt.x,aim_tgt.y,aim_tgt.z)
+    -- Cache the bone's screen point for the crosshair's Follow Target
+    -- toggle. It shares the target line's endpoint but does not require the
+    -- line itself to be enabled.
+    if vis then XH_R.tx,XH_R.ty,XH_R.tv=sx,sy,true else XH_R.tv=false end
+    if cfg.aim_tline and vis then
       local ctl=col.c_tline or {1,1,1,1}
       local c=hue_or(chroma and hsv((hue+0.5)%1,0.8,1) or nil,ctl,1)
       draw.Line(cx,cy,sx,sy,c,1.2)
     end
+  else
+    XH_R.tv=false
   end
 end
 
@@ -5836,7 +6260,7 @@ local function draw_menu()
   else draw.RectFilled(dx-3,dy-3,6,6, a(theme.accent,1), 1) end
   -- product line, sat just past the diamond so it reads as part of the lockup
   tmid(dx+11, y, TOPBAR_H, "Fust Survival", a(theme.sub,1), 12)
-  trt(x+w-PAD,y+12,16,"v1.3", a(theme.faint,1),10)
+  trt(x+w-PAD,y+12,16,"v1.4", a(theme.faint,1),10)
 
   -- vertical tab rail
   local sy=ctop+6
@@ -5902,9 +6326,11 @@ local function update_input()
   local d=ekey(0x01); ui.m.click=d and not ui.m.was; ui.m.down=d; ui.m.was=d
   if not d and ui.drag and ui.drag.k~="slider" then ui.drag=nil end
   if ui.drag and ui.drag.k=="win" then local sw,sh=scr(); ui.x=clamp(ui.m.x-ui.drag.ox,0,sw-ui.w); ui.y=clamp(ui.m.y-ui.drag.oy,0,sh-ui.h) end
-  if ui.drag and (ui.drag.k=="hud_mark" or ui.drag.k=="hud_keys" or ui.drag.k=="hud_bar") then
+  if ui.drag and (ui.drag.k=="hud_mark" or ui.drag.k=="hud_keys"
+    or ui.drag.k=="hud_bar") then
     local sw,sh=scr()
-    local key=ui.drag.k=="hud_mark" and "mark" or (ui.drag.k=="hud_keys" and "keys" or "bar")
+    local key=ui.drag.k=="hud_mark" and "mark" or (ui.drag.k=="hud_keys" and "keys")
+      or "bar"
     -- straight into the profile keys: the panels come back where they were left
     -- after a reload, and the debounced autosave persists the drag
     cfg["hud_"..key.."_x"]=clamp(ui.m.x-ui.drag.ox,0,sw-24)
@@ -6159,4 +6585,4 @@ function OnFrame()
   end
 end
 
-pcall(function() notify.Success("Fust Survival v1.3 loaded","Right Shift to toggle menu",5) end)
+pcall(function() notify.Success("Fust Survival v1.4 loaded","Right Shift to toggle menu",5) end)
