@@ -3879,103 +3879,59 @@ local function is_melee_or_utility_tool(name)
 end
 
 -- ==========================================================================
--- Gun mods (GC memory patches)
+-- Gun mods (executor GC patches)
 --
--- The game's GC exposes setgc(key, value), which rewrites that key in every
--- table that owns it - but it filters by key NAME, not by reachability. The
--- 32-key probe in the GC dump is unambiguous:
+-- Live path on the Nov 8 build: PF.sgc.gcwrite (below) calls the executor's
+-- applygc({key=value,...}) every frame. applygc rewrites every cached Lua table
+-- node whose key matches, is internally throttled and is documented as safe
+-- from OnFrame. setgc() is the fallback for executors without it, and on this
+-- build it is the only working route.
 --
---   writes : rate  spread  sway  kickRoll  adsKick  bloom  shakeDur  climb
---   refuses: kickPitch  kickBack  pitch  yaw  rise  recover  kick  shake
---            shakeStrength  spreadMult  adsTime  s2Damage  rounds  adsSpread
---            moveSpread  damageMult  mag  reload  recoilRecover  recoilPitch
---            recoilYaw  notch  sightHeight
+-- The old raw-memory path is gone: this executor's getgc() returns a node
+-- COUNT, not {fields=,table=} records. There is also no require(), so the
+-- Items / GunControl ModuleScripts cannot be reached directly and sgc_direct
+-- only works on an executor that exposes one.
 --
--- kickRoll (19 tables) writes while kickPitch and kickBack (18 tables) do not,
--- and they sit in the SAME per-weapon table - so this really is a name filter,
--- not a frozen table. "climb" is the odd one out: the only table owning it is
--- the humanoid animation state map, so it is a false positive and is unused.
---
--- What the toggle therefore actually does:
---   spread / adsSpread / moveSpread          the bullet cone itself: the shot
---                                            direction is spreadDir(LookVector,
---                                            shotSpread(def)), so all three
---                                            have to be 0 or the cone survives
---   MOVE_SPREAD / ADS_SPREAD / AIR_SPREAD    their fallbacks in the tuning table
---   sway / SWAY / SWAY_MAX / SWAY_ROT / SWAY_ROT_MAX   weapon drift
---   kickRoll / adsKick       the viewmodel's sideways kick
---   kickPitch / kickBack     the gun model's up/back jolt (refused by setgc)
---   KICK_PITCH / KICK_BACK   the per-weapon fallbacks for the same two
---   INPUT (Mouse/Touch/Gamepad)   GunControl's recoil multiplier - this is the
---                            one that makes the camera climb after each shot
---   VISUAL_BLOOM             the extra spread ring drawn while moving
---   shakeDur / SHAKE_MAX     camera shake duration and impact amplitude
---
--- "bloom" is deliberately not in the set: 93 tables own a field by that name
--- and they are the lighting / ColorCorrection ones, not the gun.
---
--- Everything is written through the GC node addresses instead of setgc. That
--- is not just to reach the refused names: one getgc scan plus one node walk is
--- a single frozen second, where the old warm-getgc + setgc + memory-getgc trio
--- was two or three. The layout was measured against 22/22 known fields:
---   Table +24 node pointer, +1 log2(node count)
---   Node  32 bytes: +0 double value, +16 key TString pointer
--- A node is only written when its key string reads back as the exact name AND
--- its stored double equals the value getgc reported, so a different layout
--- skips the write instead of corrupting the table. The dump's own run wrote
--- 69 values with 0 skipped, so this is the proven path, not a guess.
+-- Keys patched while the No recoil toggle is on (all numeric in this build):
+--   spread / adsSpread / moveSpread   the bullet cone (shotSpread(def))
+--   rise                              per-shot recoil drift
+--   kickPitch / kickBack / kickRoll   viewmodel and gun-model jolt
+--   adsKick / AdsKick                 ADS kick
+--   RecoilClimb                       camera climb transfer: 1-exp(-dt*k) = 0
+--   MaxClimb                          GunControl clamp (unused in this build)
+--   RecoilPend / RecoilYawPend        live recoil spring state
+--   recoilYaw                         live camera yaw recoil
+--   shakeStrength / shakeUntil        camera shake
+-- `sway` is excluded: the viewmodel state stores it as a Vector3 and the pose
+-- code does `state.sway + offset`, so writing 0 there throws every frame.
+-- `pitch` and `yaw` are excluded because GunHold.STYLES uses them as hold
+-- angles. `rate` is only written while Fire Rate is on.
 --
 -- Patching is GLOBAL, not per weapon: rate = 0.09 turns the 1.8 s LR Sniper
 -- into a 20x-fire-rate rifle, the most detectable case there is. The slider is
--- therefore capped to 80-190 ms (12.5 down to ~5.3 shots/s); 20 ms is what got
--- the account kicked for firerate.
+-- therefore capped to 80-190 ms (12.5 down to ~5.3 shots/s).
 --
--- The rate node addresses are cached after the scan, so moving the Fire
--- Interval slider is a handful of memory.Write calls instead of another whole
--- VM walk. The scan itself runs once per toggle that is switched on; the
--- Re-apply button forces one more.
+-- The patch is re-asserted every frame, not once: Items.SyncUpdate10() copies
+-- its internal balance table over Defs[i].recoil / Defs[i].spread the first
+-- time the inventory or crafting UI is built, which silently undoes a one-shot
+-- patch. Where BindToRenderStep is available it is also re-asserted at
+-- RenderPriority.Camera, just before the camera step reads the recoil state.
 --
 -- Turning the master toggle off cannot restore stock values: there is no
 -- read-back and the stock rate differs per weapon. Re-equip or rejoin.
-PF.sgc={force=0,mem={},memory=nil,memdone=false,done=false,hold=0,
-  last_rate=false,last_clean=false,
-  rate_addrs=nil,rate_keys=nil,rate_ms=nil,rate_val=nil,
-  state_addrs=nil,state_keys=nil,state_bound=false,state_tried=false}
+PF.sgc={force=0,last_rate=false,last_clean=false,
+  state_bound=false,state_tried=false,
+  items=nil,gun=nil,ghold=nil,direct_ms=nil,direct_ok=false,
+  applygc=nil,setgc=nil,gcmap=nil,gckey=nil,gcms=nil,gcwarm=nil,gcshot=nil,
+  ap_done=false,sg_done=false,gcform=nil,gc_vm=nil,gc_warm=nil,
+  rate_seen=nil,rate_applied=nil,rate_wait=0,
+  gc_n=0,gc_ok=false}
 
--- Names the clean toggle zeroes, as a lookup for the node walk. SGC_KEYS is the
--- getgc query list and must contain every name here, plus "rate": getgc only
--- returns a table if it owns one of the queried names, so a missing entry means
--- that table is never walked. "rate" is not in SGC_Z because it is written to
--- ms/1000 rather than zeroed.
-local SGC_Z={spread=0,adsSpread=0,moveSpread=0,sway=0,kickRoll=0,adsKick=0,
-  shakeDur=0,kickPitch=0,kickBack=0,KICK_PITCH=0,KICK_BACK=0,SHAKE_MAX=0,
-  MOVE_SPREAD=0,ADS_SPREAD=0,AIR_SPREAD=0,VISUAL_BLOOM=0,
-  SWAY=0,SWAY_MAX=0,SWAY_ROT=0,SWAY_ROT_MAX=0}
--- Recoil names folded into the clean toggle. RECOIL_CLIMB is the one that
--- matters on builds that use it: camApply moves the pending recoil into the
--- camera offset with
---   k = 1 - exp(-dt * RECOIL_CLIMB)
--- on both axes, so zeroing the constant makes that transfer 0 and the view
--- never climbs - per weapon, per attachment, with no per-frame writes. The
--- kick* names are the weapon model's own up/back/roll jolt. They overlap the
--- SGC_Z set, so writing both is the same zero, not a double write.
-local SGC_R={RECOIL_CLIMB=0,RecoilClimb=0,kickPitch=0,kickBack=0,kickRoll=0,adsKick=0,
-  KICK_PITCH=0,KICK_BACK=0}
--- Names that identify the live gun state table (the one camApply reads every
--- frame). RecoilPend is unique to it, so matching that node proves the table.
--- These are cached, not zeroed once: the render step zeroes them just before
--- the camera step, which is the only place that matters.
-local SGC_STATE={RecoilPend=true,RecoilYawPend=true}
-local SGC_KEYS={"rate","spread","adsSpread","moveSpread","sway","kickRoll",
-  "adsKick","shakeDur","kickPitch","kickBack","KICK_PITCH","KICK_BACK",
-  "SHAKE_MAX","MOVE_SPREAD","ADS_SPREAD","AIR_SPREAD","VISUAL_BLOOM",
-  "SWAY","SWAY_MAX","SWAY_ROT","SWAY_ROT_MAX","MAX_CLIMB","RECOIL_CLIMB",
-  "RecoilClimb","RecoilPend","RecoilYawPend"}
-
--- Resolve the GC API. In the dumper getgc is a bare global, but this script can
--- be loaded into an environment where it only lives on _G or on the executor's
+-- Resolve the GC API. In the dumper these are bare globals, but this script can
+-- be loaded into an environment where they only live on _G or on the executor's
 -- shared table. A nil getgc used to make the whole feature fail silently.
 -- Hoisted out of setgc_apply so the per-frame path allocates no closure.
+-- Bare globals can only be read by their literal name, hence the dispatch.
 local function gc_api(name)
   local fn=nil
   pcall(function() if type(_G)=="table" and type(_G[name])=="function" then fn=_G[name] end end)
@@ -3989,280 +3945,336 @@ local function gc_api(name)
   end
   if not fn then
     pcall(function()
-      if name=="getgc" and type(getgc)=="function" then fn=getgc end
+      local v=nil
+      if name=="getgc" then v=getgc
+      elseif name=="applygc" then v=applygc
+      elseif name=="setgc" then v=setgc
+      elseif name=="refreshgc" then v=refreshgc
+      end
+      if type(v)=="function" then fn=v end
     end)
   end
   return fn
 end
 
 -- ---------------------------------------------------------------------------
--- Memory pass for the gun-mod keys (see the block at the top of the section for
--- the layout and the key list).
+-- Executor GC patch (Project Vector: applygc).
 --
--- Every shot runs
---   u17.kickBack  = (def.kickBack  or KICK_BACK)  * KICK167[itemId]
---   u17.kickPitch = (def.kickPitch or KICK_PITCH) * KICK167[itemId]
--- and the viewmodel pose multiplies both by the kick spring, so those two
--- numbers are the gun model's up/back jolt. setgc returns 0 for both names
--- while patching kickRoll in the same table, so they are written directly -
--- together with rate, so the whole mod is one scan instead of a scan plus a
--- setgc walk.
+-- This executor exposes no require(), so the ModuleScript tables cannot be
+-- reached that way, and its getgc() returns a node COUNT instead of the old
+-- {fields=,table=} records. applygc({key=value,...}) is the supported
+-- replacement: it rewrites every cached Lua table node whose key matches, is
+-- internally throttled and is documented as safe from OnFrame. This build has
+-- no applygc, so the setgc() per-key queue below is the live path.
 --
--- getgc(keys) in this build returns the GC nodes as
---   { fields = <name -> value map>, table = <address> }
--- which is the whole reason the dump could patch them.
--- ---------------------------------------------------------------------------
--- Small shared helpers for the GC node walk. `gptr` reads a tagged pointer out
--- of a node (table values and key slots are both pointers); `gident` pulls every
--- identifier run out of a TString so a short key is not beaten by a longer run
--- inside the string header.
-local function gptr(m,a)
-  local okp,v=pcall(m.Read,a,"ptr")
-  if okp and type(v)=="number" and v>65536 then return v end
-  return nil
-end
-local function gident(buf)
-  local out,cur={},nil
-  for i=1,#buf do
-    local c=buf:byte(i)
-    if (c>=48 and c<=57) or (c>=65 and c<=90)
-      or (c>=97 and c<=122) or c==95 then
-      cur=cur or {}
-      cur[#cur+1]=string.char(c)
-    elseif cur then
-      if #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
-      cur=nil
+-- Only keys that are always numeric are listed. `sway` is deliberately absent:
+-- the viewmodel state table stores it as a Vector3 and the pose code does
+-- `state.sway + offset`, so writing 0 there would throw every frame. `pitch`
+-- and `yaw` are absent too because GunHold's STYLES pose tables use them as
+-- viewmodel hold angles. The camera climb is killed through RecoilClimb and the
+-- live RecoilPend / recoilYaw state instead.
+--
+-- Re-applying every frame is required, not defensive: the game's own
+-- SyncUpdate10() copies its internal balance table over Defs[i].recoil and
+-- Defs[i].spread the first time the inventory or crafting UI is built, which
+-- silently undoes a one-shot patch.
+-- One key per tick. setgc is a full GC walk, so patching 17 keys in one frame
+-- freezes the game for seconds. The queue spreads them over ~1.4 s at 80 ms.
+-- This is the only path on builds without applygc (this executor).
+local function sgc_shot_tick(q)
+  if not q.on then return end
+  local item=q.list[q.i]
+  if not item then
+    q.on=false
+    q.st.gc_n=q.tot
+    q.st.gc_ok=q.tot>0
+    -- The queue is done. Clear the applied rate so the debounced patch writes
+    -- rate once more, after every other key. That ordering is what keeps a
+    -- Re-apply from reverting the fire interval.
+    q.st.rate_applied=nil
+    q.st.rate_wait=0
+    if q.tid and type(thread)=="table" and type(thread.Stop)=="function" then
+      pcall(thread.Stop,q.tid)
     end
+    return
   end
-  if cur and #cur>=3 and #cur<=24 then out[#out+1]=table.concat(cur) end
-  return out
+  local ok,n=pcall(q.sg,item[1],item[2])
+  if ok and type(n)=="number" then q.tot=q.tot+n end
+  q.i=q.i+1
 end
 
-local function sgc_mem()
+local function sgc_shot_start(map,sg)
   local st=PF.sgc
-  local mem=st.mem
-  local m=st.memory
-  if not m then
-    local cand=nil
-    pcall(function() if type(_G)=="table" then cand=_G.memory end end)
-    if type(cand)~="table" then
-      pcall(function()
-        if type(getgenv)=="function" then
-          local g=getgenv()
-          if type(g)=="table" then cand=g.memory end
-        end
-      end)
+  -- A Re-apply can start a new queue before the old one finished. Stop the old
+  -- recurring thread as well as flagging it, otherwise every Re-apply leaves a
+  -- dead 80 ms timer behind.
+  if st.gcq then
+    st.gcq.on=false
+    if st.gcq.tid and type(thread)=="table" and type(thread.Stop)=="function" then
+      pcall(thread.Stop,st.gcq.tid)
     end
-    if type(cand)~="table" or type(cand.Read)~="function"
-      or type(cand.Write)~="function" or type(cand.ReadBuffer)~="function" then
-      mem.ok=false
-      return
-    end
-    m=cand
-    st.memory=m
   end
-  local g=st.getgc or gc_api("getgc")
-  st.getgc=g
-  if not g then mem.ok=false return end
-  local ms=math.floor((tonumber(cfg.gun_sgc_rate_ms) or 90)+0.5)
-  if ms<80 then ms=80 elseif ms>190 then ms=190 end
-  local ratev=ms/1000
-  local rate_on=(cfg.gun_sgc and cfg.gun_sgc_rate) and true or false
-  local clean_on=(cfg.gun_sgc and cfg.gun_sgc_clean) and true or false
-  -- KICK_PITCH / KICK_BACK are the module-level fallbacks used by any weapon
-  -- def that does not carry its own pair. They are only scales, never spring
-  -- constants, so zeroing them cannot leave the pose stuck.
-  -- SHAKE_MAX is the amplitude constant behind the impact shake: a bullet that
-  -- lands inside SHAKE_RANGE (120 studs) does
-  --   shakeStrength = max(shakeStrength, SHAKE_MAX * strength * falloff)
-  -- on every hit, which is the rest of the "Shake" label. setgc refuses
-  -- shakeStrength itself, and the value is rebuilt per shot, so the constant is
-  -- what has to go.
-  local ok,nodes=pcall(g,SGC_KEYS)
-  if not ok or type(nodes)~="table" then mem.ok=false return end
-  -- getgc returns an array in this build, but the dumper also guards against a
-  -- hash-keyed node map, so do the same instead of silently walking zero items.
-  local list=nodes
-  if #nodes==0 then
-    list={}
-    for _,v in pairs(nodes) do list[#list+1]=v end
+  local q={list={},i=1,tot=0,on=true,st=st,sg=sg}
+  -- rate is excluded: it has its own debounced patch in gcwrite, so a slider
+  -- drag cannot be overwritten by a queue entry built from an older value.
+  for k,v in pairs(map) do
+    if k~="rate" then q.list[#q.list+1]={k,v} end
   end
+  table.sort(q.list,function(a,b) return a[1]<b[1] end)
+  st.gcq=q
+  if type(thread)=="table" and type(thread.Create)=="function" then
+    local ok,id=pcall(thread.Create,function() sgc_shot_tick(q) end,80)
+    if ok and id then q.tid=id; return end
+  end
+  while q.on do sgc_shot_tick(q) end
+end
 
-  local wrote,tables=0,0
-  local raddr,rkey={},{}
-  local state_np,state_n=nil,nil
-  -- GunControl's u1.INPUT is a nested table, so it cannot be matched by the
-  -- value gate below (its node holds a pointer, not a double). The camera
-  -- recoil is  kick * mult294(), and mult294() is
-  --   1 * (ADS blend) * (CROUCH) * u1.INPUT[device]
-  -- so zeroing the three device multipliers makes the per-shot camera
-  -- pitch/yaw exactly 0 while leaving the kick pattern and the recoil spring
-  -- alone. Walking the inner table directly is the only way to reach them.
-  local function zero_input(t)
-    local np2=gptr(m,t+24)
-    if not np2 then return end
-    local okb2,b2=pcall(m.Read,t+1,"uint8")
-    local n2=4
-    if okb2 and type(b2)=="number" and b2>=0 and b2<=4 then
-      n2=math.max(4,2^b2)
-    end
-    for k=0,n2-1 do
-      local b2p=np2+k*32
-      local kp2=gptr(m,b2p+16)
-      if kp2 then
-        local okr2,buf2=pcall(m.ReadBuffer,kp2,48)
-        if okr2 and type(buf2)=="string" and #buf2>=16 then
-          local runs2=gident(buf2)
-          for r2=1,#runs2 do
-            local s2=runs2[r2]
-            if s2=="Mouse" or s2=="Touch" or s2=="Gamepad" then
-              -- the stock values are 1 / 0.7 / 0.8, so anything else means a
-              -- different layout and is left alone
-              local okv2,v2=pcall(m.Read,b2p,"double")
-              if okv2 and type(v2)=="number" and v2>0 and v2<4 then
-                if pcall(m.Write,b2p,"double",0) then wrote=wrote+1 end
-              end
-              break
-            end
-          end
-        end
-      end
-    end
+PF.sgc.gcwrite=function(rate_on,clean_on,ms)
+  local st=PF.sgc
+  if not rate_on and not clean_on then
+    st.gcshot=nil
+    return 0,false
   end
-  for i=1,#list do
-    local d=list[i]
-    if type(d)=="table" then
-      local f=d.fields
-      local addr=d.table
-      if type(f)=="table" and type(addr)=="number" and addr>65536 then
-        local np=gptr(m,addr+24)
-        if np then
-          tables=tables+1
-          local okb,b=pcall(m.Read,addr+1,"uint8")
-          -- table+1 is log2(node count) on this build (gc.txt: "node count
-          -- byte: table+1 - walks stop at the real end"), so 2^b is the exact
-          -- array length and the walk cannot overrun. 7 covers the 125-key
-          -- tuning table, but a table with more keys needs 256 or 512, so the
-          -- cap goes to 9 instead of silently truncating at 128. A byte
-          -- outside 0..9 is not a node count, so the walk keeps the old
-          -- bounded 64-node guess.
-          local n=64
-          if okb and type(b)=="number" and b>=0 and b<=9 then n=2^b end
-          for j=0,n-1 do
-            local base=np+j*32
-            local kp=gptr(m,base+16)
-            if kp then
-              local okr,buf=pcall(m.ReadBuffer,kp,64)
-              if okr and type(buf)=="string" and #buf>=16 then
-                local runs=gident(buf)
-                local nm=nil
-                for r=1,#runs do
-                  local s=runs[r]
-                  if f[s]~=nil and (s=="rate" or SGC_Z[s]~=nil or SGC_R[s]~=nil
-                    or SGC_STATE[s]) then
-                    local okv,v=pcall(m.Read,base,"double")
-                    local want=f[s]
-                    if okv and type(v)=="number" and type(want)=="number"
-                      and v==v and want==want then
-                      local tol=math.max(math.abs(v),math.abs(want),1e-9)*1e-9
-                      if math.abs(v-want)<=tol then nm=s break end
-                    end
-                  end
-                end
-                -- MAX_CLIMB is unique to GunControl's module table (u1), so
-                -- finding it proves the INPUT node beside it is u1.INPUT and
-                -- not some unrelated field with the same name.
-                if not nm and clean_on and f["MAX_CLIMB"]~=nil then
-                  for r=1,#runs do
-                    if runs[r]=="INPUT" then
-                      local it=gptr(m,base)
-                      if it then zero_input(it) end
-                      break
-                    end
-                  end
-                end
-                -- The live gun controller is identified by its own long,
-                -- unique field names, NOT by a value match: RecoilPend is nil
-                -- at rest (gc.txt 2554 lists RecoilYawPend but not RecoilPend),
-                -- so a value-gated test misses the table until the moment a
-                -- shot is fired. Name-only matching is stable and the names
-                -- used here (8+ chars, numeric-suffixed) cannot collide.
-                if not state_np then
-                  for r=1,#runs do
-                    local s=runs[r]
-                    if s=="RecoilYawPend" or s=="RecoilPend" or s=="ReloadCF"
-                      or s=="Ammo296" or s=="Sent88" then
-                      state_np=np
-                      state_n=n
-                      break
-                    end
-                  end
-                end
-                if nm=="rate" then
-                  -- cache the node so the slider can rewrite it without a scan.
-                  -- The key pointer is kept as an identity check for later
-                  -- writes, because a freed table's address can be reused.
-                  raddr[#raddr+1]=base
-                  rkey[#rkey+1]=kp
-                  if rate_on and pcall(m.Write,base,"double",ratev) then
-                    wrote=wrote+1
-                  end
-                elseif nm and f[nm]~=0 and clean_on
-                  and (SGC_Z[nm]~=nil or SGC_R[nm]~=nil) then
-                  if pcall(m.Write,base,"double",0) then wrote=wrote+1 end
-                end
-              end
-            end
-          end
-        end
-      end
+  local key=(rate_on and 2 or 0)+(clean_on and 1 or 0)
+  if st.gckey~=key or st.gcms~=ms then
+    local map={}
+    if rate_on then map.rate=ms/1000 end
+    if clean_on then
+      -- bullet cone
+      map.spread=0; map.adsSpread=0; map.moveSpread=0
+      -- recoil drift (numeric on the weapon def only)
+      map.rise=0
+      -- viewmodel jolt
+      map.kickPitch=0; map.kickBack=0; map.kickRoll=0
+      map.adsKick=0; map.AdsKick=0
+      -- camera climb constant + GunControl clamp
+      map.RecoilClimb=0; map.MaxClimb=0
+      -- live recoil spring / shake state
+      map.RecoilPend=0; map.RecoilYawPend=0; map.recoilYaw=0
+      map.shakeStrength=0; map.shakeUntil=0
     end
+    st.gcmap=map
+    if st.gckey~=key then st.gcshot=nil end
+    st.gckey=key
+    st.gcms=ms
   end
-  -- Cache the live gun state nodes. RecoilPend / RecoilYawPend feed the camera
-  -- offset, recoil / recoilYaw are what camApply actually rotates by, and the
-  -- three kick values are the viewmodel jolt. Zeroing all of them at the
-  -- camera render step kills the climb even when the tuning constant cannot be
-  -- reached, and keeps the gun model still. The controller table resolves 97
-  -- keys, so 128 nodes is its real array even if the header byte could not be
-  -- read.
-  if state_np then
-    local sn=state_n
-    if not sn or sn<128 then sn=128 end
-    local sa,sk={},{}
-    for j=0,sn-1 do
-      local base=state_np+j*32
-      local kp=gptr(m,base+16)
-      if kp then
-        local okr,buf=pcall(m.ReadBuffer,kp,48)
-        if okr and type(buf)=="string" and #buf>=16 then
-          local runs=gident(buf)
-          for r=1,#runs do
-            local s=runs[r]
-            if s=="recoil" or s=="recoilYaw" or s=="RecoilPend" or s=="RecoilYawPend"
-              or s=="kickPitch" or s=="kickBack" or s=="kickRoll" then
-              sa[#sa+1]=base
-              sk[#sk+1]=kp
-              break
-            end
+  local map=st.gcmap
+  local fn=st.applygc
+  if not fn and not st.ap_done then
+    fn=gc_api("applygc")
+    st.applygc=fn
+    st.ap_done=true
+  end
+  if fn then
+    -- Pre-warm once per key set (not per slider step) so applygc does not pay a
+    -- full scan on its first call. refreshgc() runs first: a fresh injection can
+    -- leave the executor's VM list empty, and applygc then answers 0 nodes for
+    -- every key even though the game tables exist.
+    if st.gcwarm~=key then
+      local rf=gc_api("refreshgc")
+      if rf then
+        local okv,v=pcall(rf)
+        if okv and type(v)=="number" then st.gc_vm=v end
+      end
+      local g=gc_api("getgc")
+      st.gc_warm=0
+      if g then
+        local ks={}
+        for k in pairs(map) do ks[#ks+1]=k end
+        local oka,na=pcall(g,ks)
+        if oka and type(na)=="number" then st.gc_warm=na end
+        if st.gc_warm==0 then
+          -- Some builds accept only the single-key form; retry key by key.
+          for i=1,#ks do
+            local okb,nb=pcall(g,ks[i])
+            if okb and type(nb)=="number" then st.gc_warm=st.gc_warm+nb end
           end
         end
       end
+      st.gcwarm=key
     end
-    st.state_addrs=sa
-    st.state_keys=sk
+    local ok,n=pcall(fn,map)
+    if ok and type(n)=="number" and n>0 then
+      st.gc_n=n
+      st.gc_ok=true
+      return n,true,st.gc_vm,st.gc_warm
+    end
+    -- Table form patched nothing. Some builds only implement the
+    -- applygc(key, value) signature, so try that once per key set.
+    if st.gcform~=key then
+      st.gcform=key
+      local tot=0
+      for k,v in pairs(map) do
+        local ok2,n2=pcall(fn,k,v)
+        if ok2 and type(n2)=="number" then tot=tot+n2 end
+      end
+      if tot>0 then
+        st.gc_n=tot
+        st.gc_ok=true
+        return tot,true,st.gc_vm,st.gc_warm
+      end
+    end
+    st.gc_ok=(ok and type(n)=="number")
+    if ok and type(n)=="number" then return n,true,st.gc_vm,st.gc_warm end
+    return 0,true,st.gc_vm,st.gc_warm
+  end
+  -- No applygc on this build. setgc() is a full walk and far too slow for the
+  -- frame path, but it is the only remaining table-level patch, so run it once
+  -- per key set. The game rewrites Defs from its balance table on the first
+  -- inventory build; that pass calls gcwrite again, and the toggle going off
+  -- clears gcshot so the next enable re-applies.
+  local sg=st.setgc
+  if not sg and not st.sg_done then
+    sg=gc_api("setgc")
+    st.setgc=sg
+    st.sg_done=true
+  end
+  if not sg then return 0,false,st.gc_vm,st.gc_warm end
+  -- The rate slider has its own debounced single-key patch. setgc is a full GC
+  -- walk, so dragging must not fire one per frame: wait for the value to hold
+  -- still for ~0.15 s, then write it once. Without this a drag changed the
+  -- number in the UI and nothing in game.
+  if rate_on then
+    if st.rate_seen~=ms then
+      st.rate_seen=ms
+      st.rate_wait=0
+    elseif st.rate_applied~=ms then
+      st.rate_wait=(st.rate_wait or 0)+1
+      if st.rate_wait>=14 then
+        st.rate_applied=ms
+        local okr,nr=pcall(sg,"rate",ms/1000)
+        if okr and type(nr)=="number" and nr>0 then st.gc_ok=true end
+      end
+    end
   else
-    st.state_addrs=nil
-    st.state_keys=nil
+    st.rate_applied=nil
   end
-  mem.ok=(wrote>0)
-  mem.wrote=wrote
-  mem.tables=tables
-  st.rate_addrs=raddr
-  st.rate_keys=rkey
-  -- nil when rate was off during the scan, so the first enable writes through
-  -- the slider fast path instead of waiting for another scan.
-  st.rate_ms=rate_on and ms or nil
-  st.rate_val=ratev
+  if st.gcshot~=key then
+    st.gcshot=key
+    -- Pre-warm every key once per key set. setgc reads the executor's node
+    -- cache, and without this the per-key calls patch 0 nodes.
+    local g=gc_api("getgc")
+    if g then
+      local ks={}
+      for k in pairs(map) do ks[#ks+1]=k end
+      local okg,ng=pcall(g,ks)
+      if okg and type(ng)=="number" then st.gc_warm=ng end
+    end
+    -- Table form first: on some builds it patches everything in one walk.
+    -- If it reports 0, fall back to the per-key queue, which is the only
+    -- route on this build. rate is excluded from the queue and is written by
+    -- the debounced patch above; when the queue finishes it clears
+    -- rate_applied so rate is always re-written last.
+    local ok,n=pcall(sg,map)
+    if ok and type(n)=="number" and n>0 then
+      st.gc_n=n
+      st.gc_ok=true
+    else
+      sgc_shot_start(map,sg)
+    end
+  end
+  return st.gc_n,true,st.gc_vm,st.gc_warm
+end
+
+-- ---------------------------------------------------------------------------
+-- Direct module patch.
+--
+-- The Nov 8 build moved every weapon stat into ReplicatedStorage.Fust.Items
+-- (Defs[id].rate / spread / adsSpread / moveSpread, plus the nested
+-- recoil.{pitch,yaw,recover,rise,sway}) and the camera recoil pattern into
+-- ReplicatedStorage.Fust.GunControl (PATTERNS[*].kicks, INPUT, MaxClimb,
+-- YawScale). Both modules are ordinary Lua tables, so require() reaches them
+-- without a GC walk or a raw memory write. The executor's getgc returns an
+-- integer count, so the direct path is the primary fix and the GC patch below
+-- is the fallback for builds where require is blocked.
+-- ---------------------------------------------------------------------------
+local function sgc_direct(rate_on,clean_on,ms)
+  local st=PF.sgc
+  local rs=nil
+  pcall(function() rs=game:GetService("ReplicatedStorage") end)
+  if not rs then return 0 end
+  -- Same dual-name child lookup the NPC/world passes use: this runtime exposes
+  -- instances with either PascalCase methods or the snake_case binding, and a
+  -- plain :FindFirstChild would silently answer nil on the other build.
+  local fust=PF.team.child(rs,"Fust")
+  if not fust then return 0 end
+  local function mod(name)
+    local inst=PF.team.child(fust,name)
+    if not inst then return nil end
+    local cn=inst.ClassName
+    if cn~="ModuleScript" then cn=inst.class_name end
+    if cn~="ModuleScript" then return nil end
+    local ok,m=pcall(require,inst)
+    if ok and type(m)=="table" then return m end
+    return nil
+  end
+  local wrote=0
+  local rv=ms/1000
+  local items=st.items
+  if not items then items=mod("Items"); st.items=items end
+  if items and type(items.Defs)=="table" then
+    for _,d in pairs(items.Defs) do
+      if type(d)=="table" and d.weapon=="gun" then
+        if rate_on then
+          d.rate=rv
+          wrote=wrote+1
+        end
+        if clean_on then
+          if type(d.spread)=="number" then d.spread=0 end
+          if type(d.adsSpread)=="number" then d.adsSpread=0 end
+          if type(d.moveSpread)=="number" then d.moveSpread=0 end
+          local rc=d.recoil
+          if type(rc)=="table" then
+            -- pitch/yaw are the per-shot kick, rise/sway the drift. recover is
+            -- the spring rate that pulls the view back to rest, so it is left
+            -- alone: zeroing a divisor like that can leave an offset stuck.
+            rc.pitch=0; rc.yaw=0; rc.rise=0; rc.sway=0
+          end
+          wrote=wrote+1
+        end
+      end
+    end
+  end
+  if clean_on then
+    local gc=st.gun
+    if not gc then gc=mod("GunControl"); st.gun=gc end
+    if gc then
+      local pat=gc.PATTERNS
+      if type(pat)=="table" then
+        for _,p in pairs(pat) do
+          local ks=type(p)=="table" and p.kicks or nil
+          if type(ks)=="table" then
+            for i=1,#ks do
+              local k=ks[i]
+              if type(k)=="table" then k[1]=0; k[2]=0 end
+            end
+          end
+        end
+      end
+      local inp=gc.INPUT
+      if type(inp)=="table" then
+        inp.Mouse=0; inp.Touch=0; inp.Gamepad=0
+      end
+      wrote=wrote+1
+    end
+    local gh=st.ghold
+    if not gh then gh=mod("GunHold"); st.ghold=gh end
+    if gh then
+      local guns=gh.GUNS
+      if type(guns)=="table" then
+        for _,g in pairs(guns) do
+          if type(g)=="table" then
+            if g.kickPitch~=nil then g.kickPitch=0 end
+            if g.kickBack~=nil then g.kickBack=0 end
+            if g.kickRoll~=nil then g.kickRoll=0 end
+            if g.AdsKick~=nil then g.AdsKick=0 end
+          end
+        end
+      end
+      wrote=wrote+1
+    end
+  end
+  return wrote
 end
 
 local function setgc_apply()
@@ -4276,106 +4288,71 @@ local function setgc_apply()
     if forced then st.force=sgc_force end
     st.last_rate=false
     st.last_clean=false
+    st.rate_applied=nil
     return
   end
-  -- Slider fast path: the scan already cached every rate node, so a drag is a
-  -- few memory writes instead of another whole-VM walk. The key pointer check
-  -- makes sure the cached address still holds a "rate" node before writing.
-  if rate_on and st.rate_addrs and st.rate_ms~=ms then
-    local m=st.memory
-    if m then
-      local v=ms/1000
-      local keys=st.rate_keys
-      for i=1,#st.rate_addrs do
-        local okp,p=pcall(m.Read,st.rate_addrs[i]+16,"ptr")
-        if okp and p==keys[i] then
-          pcall(m.Write,st.rate_addrs[i],"double",v)
-        end
-      end
-      st.rate_ms=ms
-      st.rate_val=v
-    end
+  -- Executor GC patch: the only path that actually reaches the live weapon
+  -- tables on this build (no require, and getgc no longer returns node
+  -- addresses). Runs every frame while a sub-toggle is on because the game
+  -- rewrites Defs.recoil / .spread from its balance table on the first
+  -- inventory build, which undoes a one-shot patch.
+  PF.sgc.gcwrite(rate_on,clean_on,ms)
+  -- Direct module fast path: a slider drag rewrites Defs[id].rate without any
+  -- GC work. st.direct_ms tracks the last value written so this is one pass per
+  -- slider change, not one per frame.
+  if rate_on and st.direct_ms~=ms then
+    if sgc_direct(true,false,ms)>0 then st.direct_ok=true end
+    st.direct_ms=ms
   end
-  -- ONE automatic scan per toggle that is switched ON. A whole-VM getgc walk
-  -- freezes the game for about a second, so re-running it on every toggle click
-  -- (and on every slider pixel) was a hitch per click. The scan waits 45 frames
-  -- (~0.75 s) after the last change, so switching the master on and then the
-  -- sub-toggles on still costs a single pass, and once that pass has run only
-  -- another enable or the Re-apply button starts a new one.
-  --
-  -- Switching a toggle OFF does not scan: the values are already written and
-  -- there is no read-back to restore, so a scan would only cost a second.
-  --
-  -- The old code keyed this on "has a scan ever run", which meant enabling
-  -- Reduce Spread / Sway / Kick / Bloom / Shake (now No Spread...) after Fire
-  -- Rate had already scanned did nothing until Re-apply was pressed. The two
-  -- enable edges are tracked instead, so every toggle gets its own single pass.
-  -- Fire Rate only needs a scan the first time, to find the rate nodes; after
-  -- that the slider fast path above writes them directly, so enabling it again
-  -- must not cost another second. The merged clean toggle (No Spread / Sway /
-  -- Kick / Bloom / Shake / Recoil) always needs the walk, because that is the
-  -- only place those names are zeroed.
+  -- The key patch is re-asserted every frame by gcwrite above. This edge check
+  -- only decides when the slower setgc queue and the direct module pass need to
+  -- run again: on each toggle enable edge and on Re-apply, never on a timer.
   local added=(clean_on and not st.last_clean)
-    or (rate_on and not st.last_rate and not st.rate_addrs)
+    or (rate_on and not st.last_rate)
   st.last_rate=rate_on
   st.last_clean=clean_on
-  if forced then
-    st.force=sgc_force
-    st.memdone=false
-    st.done=false
-    st.hold=44
-  elseif added then
-    st.memdone=false
-    st.done=false
-    st.hold=0
-  elseif st.done then
-    return
+  -- Apply the clean half (and rate again, in case a module was required after
+  -- the first attempt) on every enable edge and on Re-apply. This is what
+  -- replaces the old "everything lives in the GC" assumption: the live defs and
+  -- the recoil pattern are patched directly, so the mods work even when getgc
+  -- only returns a pre-warm count.
+  if forced or added then
+    if sgc_direct(rate_on,clean_on,ms)>0 then st.direct_ok=true end
+    -- A Re-apply click must also re-run the one-shot setgc fallback (used only
+    -- when the executor has no applygc) and redo the VM refresh + key pre-warm,
+    -- otherwise a 0-node first scan can never be retried without a rejoin.
+    if forced then
+      st.gcshot=nil
+      st.gcwarm=nil
+      st.gcform=nil
+      -- Re-apply means the game may have reverted the stats. Schedule a rate
+      -- write now as well as after the queue, so the fire interval comes back
+      -- immediately and is still the last key written.
+      st.rate_applied=nil
+      st.rate_wait=0
+    end
+    -- gcwrite re-queues every key when forced. When the queue finishes it
+    -- clears rate_applied, so the debounced patch writes rate last and a
+    -- Re-apply cannot leave the fire interval reverted.
+    PF.sgc.gcwrite(rate_on,clean_on,ms)
   end
-  st.hold=st.hold+1
-  if st.hold<45 then return end
-  st.hold=0
-  st.done=true
-  if not st.memdone then
-    st.memdone=true
-    pcall(sgc_mem)
-  end
+  if forced then st.force=sgc_force end
 end
 
 -- ---------------------------------------------------------------------------
 -- Live recoil state kill.
 --
--- Zeroing the tuning constant is not enough on every build. The live gun
--- controller exposes its state as a GC table (RecoilPend / RecoilYawPend /
--- recoil / recoilYaw), and the camera step rotates the view by recoil /
--- recoilYaw. Zeroing those four nodes at RenderPriority.Camera - camUndo is
--- bound one step lower and camApply one step higher - means the camera step
--- always reads zero, so no climb can be applied no matter which constant the
--- build uses.
---
--- sgc_mem caches the node addresses once; every write re-checks the node's key
--- pointer, so a table that was freed or moved cannot be written through a
--- stale address.
+-- The executor GC patch is re-asserted here as well as from setgc_apply. This
+-- callback runs at RenderPriority.Camera: the gun controller has already
+-- written this frame's RecoilPend / RecoilYawPend by then, and the camera step
+-- reads them immediately after. Patching only from OnFrame loses that race.
 local function sgc_state()
-  local st=PF.sgc
-  -- gated by the merged clean toggle
-  -- (No Spread / Sway / Kick / Bloom / Shake / Recoil)
-  if not (cfg.gun_sgc and cfg.gun_sgc_clean) then return end
-  local a=st.state_addrs
-  if not a then return end
-  local m=st.memory
-  if not m then return end
-  local k=st.state_keys
-  for i=1,#a do
-    -- read first: at rest every node is already 0, so the normal path is one
-    -- read per node and no key-pointer check or write at all
-    local okv,v=pcall(m.Read,a[i],"double")
-    if okv and type(v)=="number" and v~=0 then
-      local okp,p=pcall(m.Read,a[i]+16,"ptr")
-      if okp and p==k[i] then
-        pcall(m.Write,a[i],"double",0)
-      end
-    end
-  end
+  local rate_on=(cfg.gun_sgc and cfg.gun_sgc_rate) and true or false
+  local clean_on=(cfg.gun_sgc and cfg.gun_sgc_clean) and true or false
+  if not rate_on and not clean_on then return end
+  local ms=math.floor((tonumber(cfg.gun_sgc_rate_ms) or 90)+0.5)
+  if ms<80 then ms=80 elseif ms>190 then ms=190 end
+  PF.sgc.gcwrite(rate_on,clean_on,ms)
 end
 
 local function sgc_state_bind()
@@ -5647,8 +5624,9 @@ local function run_npc_esp_h()
 end
 
 local function run_gunmods()
-  -- weapon-stat patches: one GC scan, then memory writes only. Applies once
-  -- (after a short settle) or on the Re-apply button - never on a timer.
+  -- weapon-stat patches: re-asserted every frame while a sub-toggle is on, and
+  -- re-queued on the Re-apply button - never on a timer.
+  local st=PF.sgc
   pcall(setgc_apply)
   -- No Recoil keeps the live recoil state at zero. The render-step binding is
   -- created once; if the executor will not bind it, the same function runs
@@ -5656,7 +5634,6 @@ local function run_gunmods()
   -- priority is covered: this pass runs first, the priority-200 pass runs just
   -- before the game's camera step. The callback is a no-op while the toggle is
   -- off, so leaving it bound is free.
-  local st=PF.sgc
   if not st.state_bound then pcall(sgc_state_bind) end
   pcall(sgc_state)
 end
